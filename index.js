@@ -11,7 +11,7 @@ app.use(express.json());
 const clientId = '6suowimw8bemqf3u9gurh7qnpx74sd';
 const accessToken = 'q4hi62k3igoelslpmuka0vw2uwz8gv';
 const igdbUrl = 'https://api.igdb.com/v4/games';
-const deepImageUrl = 'https://api.deep-image.ai/v1/enhance';
+const deepImageUrl = 'https://deep-image.ai/rest_api/process_result';
 const deepImageApiKey = '8e2d5b10-73b4-11f0-bf3f-4f562e7a2c44';
 
 const igdbHeaders = {
@@ -28,10 +28,17 @@ const deepImageHeaders = {
 async function enhanceImage(imageUrl) {
   if (!imageUrl || imageUrl === 'N/A') return imageUrl;
   try {
-    const response = await axios.post(deepImageUrl, { image_url: imageUrl }, { headers: deepImageHeaders });
-    return response.data.result_url || imageUrl; // Возвращаем улучшенный URL или оригинальный при ошибке
+    console.log(`Отправка изображения на улучшение: ${imageUrl}`);
+    const response = await axios.post(deepImageUrl, {
+      enhancements: ['denoise', 'deblur', 'light'],
+      url: imageUrl,
+      width: 2000
+    }, { headers: deepImageHeaders });
+    const enhancedUrl = response.data.url || imageUrl;
+    console.log(`Улучшенный URL: ${enhancedUrl}`);
+    return enhancedUrl;
   } catch (error) {
-    console.error(`Ошибка улучшения изображения: ${error.message}`);
+    console.error(`Ошибка улучшения изображения: ${error.message}, Код: ${error.response?.status}`);
     return imageUrl; // Fallback на оригинальный URL
   }
 }
