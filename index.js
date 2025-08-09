@@ -182,7 +182,7 @@ app.get('/popular', async (req, res) => {
 // Эндпоинт для хаотичного списка игр
 app.get('/games', async (req, res) => {
   try {
-    const body = 'fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; limit 5;';
+    const body = 'fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; limit 10;';
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders });
     const data = response.data;
     const shuffledData = shuffle([...data]);
