@@ -165,7 +165,7 @@ app.get('/games', async (req, res) => {
     const offset = (page - 1) * 50;
     const history = historyCache.get(historyKey) || [];
     const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 10; offset ${offset};`;
+    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 5; offset ${offset};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders });
     const data = response.data;
     if (!data?.length) {
