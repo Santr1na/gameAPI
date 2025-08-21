@@ -50,15 +50,15 @@ async function enhanceImage(imageUrl) {
     const outputFilename = `enhanced_${path.basename(imageUrl)}`;
     const outputPath = path.join(outputDir, outputFilename);
     await sharp(imageBuffer)
-      .resize({ width: 800, height: 1200, fit: 'inside', kernel: 'lanczos3' }) // Reduced size for speed
-      .toFormat('jpeg', { quality: 85 }) // Lower quality for faster processing
+      .resize({ width: 800, height: 1200, fit: 'inside', kernel: 'lanczos3' })
+      .toFormat('jpeg', { quality: 85 })
       .toFile(outputPath);
     const enhancedUrl = `/images/${outputFilename}`;
     cache.set(imageUrl, enhancedUrl);
     return enhancedUrl;
   } catch (error) {
     console.error(`Image enhancement error: ${error.message}`);
-    return imageUrl.replace('t_thumb', 't_cover_big'); // Fallback to larger default
+    return imageUrl.replace('t_thumb', 't_cover_big');
   }
 }
 
@@ -73,7 +73,7 @@ async function getSteamCover(gameName, platforms) {
     const app = steamResponse.data.applist.apps.find(a => a.name.toLowerCase() === gameName.toLowerCase());
     if (app) {
       const coverUrl = `https://steamcdn-a.akamaihd.net/steam/apps/${app.appid}/library_600x900.jpg`;
-      cache.set(cacheKey, coverUrl, 86400); // Cache for 24 hours
+      cache.set(cacheKey, coverUrl, 86400);
       return coverUrl;
     }
     return null;
@@ -171,7 +171,7 @@ app.get('/games', async (req, res) => {
       return res.status(404).json({ error: 'No new games available' });
     }
     const shuffledData = weightedShuffle(data, history);
-    const selectedGames = shuffledData.slice(0, 5); // Reduced to 5 for faster response
+    const selectedGames = shuffledData.slice(0, 5);
     updateHistory(selectedGames.map(g => g.id));
     const games = await Promise.all(selectedGames.map(game => processShortGame(game)));
     res.json(games);
@@ -196,4 +196,18 @@ app.get('/games/:id', async (req, res) => {
   }
 });
 
-app.listen(port, () => console.log(`Server running on port ${port}`));
+// Start server with error handling
+const server = app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+}).on('error', (err) => {
+  console.error('Server failed to start:', err.message);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  server.close(() => {
+    console.log('Server terminated');
+  });
+});
+
+module.exports = app; // For testing locally if needed
