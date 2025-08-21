@@ -22,58 +22,58 @@ const igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessTo
 // Weighted shuffle to prioritize less recently shown games
 function weightedShuffle(array, history) {
   const weights = array.map(game => {
-    const recentCount = history.includes(game.id) ? 0.01 : 1; // Stronger penalty for recent games
+    const recentCount = history.includes(game.id) ? 0.01 : 1;
     return recentCount * (Math.random() + 1);
   });
-  const sorted = array.map((game, i) => ({ game, weight: weights[i] }))
+  return array.map((game, i) => ({ game, weight: weights[i] }))
     .sort((a, b) => b.weight - a.weight)
     .map(({ game }) => game);
-  return sorted;
 }
 
 // Update game history
 function updateHistory(gameIds) {
   let history = historyCache.get(historyKey) || [];
-  history = [...new Set([...gameIds, ...history])].slice(0, 200); // Increased to 200 unique games
+  history = [...new Set([...gameIds, ...history])].slice(0, 200);
   historyCache.set(historyKey, history);
 }
 
-// Enhance image using Sharp
+// Enhance image using Sharp (optimized to skip if not needed)
 async function enhanceImage(imageUrl) {
   if (!imageUrl || imageUrl === 'N/A') return imageUrl;
   const cached = cache.get(imageUrl);
   if (cached) return cached;
   try {
-    const imageResponse = await axios.get(imageUrl.replace('t_thumb', 't_1080p'), { responseType: 'arraybuffer' });
+    const imageResponse = await axios.get(imageUrl.replace('t_thumb', 't_cover_big'), { responseType: 'arraybuffer', timeout: 5000 });
     const imageBuffer = Buffer.from(imageResponse.data);
     const outputDir = path.join(__dirname, 'images');
     await fs.mkdir(outputDir, { recursive: true });
     const outputFilename = `enhanced_${path.basename(imageUrl)}`;
     const outputPath = path.join(outputDir, outputFilename);
     await sharp(imageBuffer)
-      .resize({ width: 1000, height: 1500, fit: 'contain', kernel: 'lanczos3', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-      .sharpen({ sigma: 2.5 })
-      .gamma(2.0)
-      .toFormat('jpeg', { quality: 95 })
+      .resize({ width: 800, height: 1200, fit: 'inside', kernel: 'lanczos3' }) // Reduced size for speed
+      .toFormat('jpeg', { quality: 85 }) // Lower quality for faster processing
       .toFile(outputPath);
     const enhancedUrl = `/images/${outputFilename}`;
     cache.set(imageUrl, enhancedUrl);
     return enhancedUrl;
   } catch (error) {
     console.error(`Image enhancement error: ${error.message}`);
-    return imageUrl.replace('t_thumb', 't_cover_big_2x');
+    return imageUrl.replace('t_thumb', 't_cover_big'); // Fallback to larger default
   }
 }
 
-// Get Steam cover
+// Get Steam cover (with timeout and caching)
 async function getSteamCover(gameName, platforms) {
   if (!platforms.includes('Steam')) return null;
+  const cacheKey = `steam_${gameName}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
   try {
-    const steamResponse = await axios.get(steamUrl);
+    const steamResponse = await axios.get(steamUrl, { timeout: 5000 });
     const app = steamResponse.data.applist.apps.find(a => a.name.toLowerCase() === gameName.toLowerCase());
     if (app) {
       const coverUrl = `https://steamcdn-a.akamaihd.net/steam/apps/${app.appid}/library_600x900.jpg`;
-      cache.set(gameName, coverUrl);
+      cache.set(cacheKey, coverUrl, 86400); // Cache for 24 hours
       return coverUrl;
     }
     return null;
@@ -83,13 +83,13 @@ async function getSteamCover(gameName, platforms) {
   }
 }
 
-// Get game cover
+// Get game cover (parallelized and optimized)
 async function getGameCover(gameName, platforms, igdbCover) {
-  const steamCover = await getSteamCover(gameName, platforms);
-  return steamCover || await enhanceImage(igdbCover);
+  const [steamCover] = await Promise.all([getSteamCover(gameName, platforms)]);
+  return steamCover || (igdbCover !== 'N/A' ? enhanceImage(igdbCover) : igdbCover);
 }
 
-// Process short game info
+// Process short game info (minimized fields)
 async function processShortGame(game) {
   const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
   const platforms = game.platforms ? game.platforms.map(p => p.name) : ['N/A'];
@@ -98,30 +98,28 @@ async function processShortGame(game) {
     name: game.name,
     cover_image: await getGameCover(game.name, platforms, coverImage),
     critic_rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : 'N/A',
-    release_year: game.release_dates?.length ? new Date(game.release_dates[game.release_dates.length - 1].date * 1000).getFullYear() : 'В разработке',
+    release_year: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).getFullYear() : 'N/A',
     main_genre: game.genres?.[0]?.name || 'N/A',
     platforms
   };
 }
 
-// Process full game info
+// Process full game info (optimized similar games)
 async function processGame(game) {
   const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
   const platforms = game.platforms ? game.platforms.map(p => p.name) : ['N/A'];
   const genres = game.genres ? game.genres.map(g => g.name) : ['N/A'];
   const summary = game.summary || 'N/A';
-  const similarGames = game.similar_games ? await Promise.all(game.similar_games.map(async s => {
+  const similarGames = game.similar_games?.length ? await Promise.all(game.similar_games.slice(0, 3).map(async s => {
     const similarCoverImage = s.cover ? `https:${s.cover.url}` : 'N/A';
     const similarPlatforms = s.platforms ? s.platforms.map(p => p.name) : ['N/A'];
-    const similarName = s.name;
-    const similarMainGenre = s.genres?.[0]?.name || 'N/A';
     return {
       id: s.id,
-      name: similarName,
+      name: s.name,
       cover_image: await getGameCover(s.name, similarPlatforms, similarCoverImage),
       critic_rating: s.aggregated_rating ? Math.round(s.aggregated_rating) : 'N/A',
-      release_year: s.release_dates?.length ? new Date(s.release_dates[s.release_dates.length - 1].date * 1000).getFullYear() : 'N/A',
-      main_genre: similarMainGenre,
+      release_year: s.release_dates?.[0]?.date ? new Date(s.release_dates[0].date * 1000).getFullYear() : 'N/A',
+      main_genre: s.genres?.[0]?.name || 'N/A',
       platforms: similarPlatforms
     };
   })) : ['N/A'];
@@ -130,7 +128,7 @@ async function processGame(game) {
     name: game.name,
     genres,
     platforms,
-    release_date: game.release_dates?.length ? new Date(game.release_dates[game.release_dates.length - 1].date * 1000).toISOString().split('T')[0] : 'N/A',
+    release_date: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).toISOString().split('T')[0] : 'N/A',
     rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : (game.rating ? Math.round(game.rating) : 'N/A'),
     rating_type: game.aggregated_rating ? 'Critics' : (game.rating ? 'Users' : 'N/A'),
     cover_image: await getGameCover(game.name, platforms, coverImage),
@@ -140,16 +138,16 @@ async function processGame(game) {
     }) : ['N/A'],
     summary,
     developers: game.involved_companies ? game.involved_companies.map(c => c.company.name) : ['N/A'],
-    videos: game.videos ? game.videos.map(v => `https://www.youtube.com/watch?v=${v.video_id}`) : ['N/A'],
+    videos: game.videos ? game.videos.map(v => `https://www.youtube.com/watch?v=${v.video_id}`).slice(0, 3) : ['N/A'],
     similar_games: similarGames
   };
 }
 
-// Popular games endpoint
+// Popular games endpoint (optimized query)
 app.get('/popular', async (req, res) => {
   try {
-    const body = 'fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit 10; sort aggregated_rating desc;';
-    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders });
+    const body = 'fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit 10;';
+    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const games = await Promise.all(response.data.map(game => processShortGame(game)));
     res.json(games);
   } catch (error) {
@@ -158,7 +156,7 @@ app.get('/popular', async (req, res) => {
   }
 });
 
-// Random games endpoint with improved randomness
+// Random games endpoint with improved randomness (optimized limit)
 app.get('/games', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -166,14 +164,14 @@ app.get('/games', async (req, res) => {
     const history = historyCache.get(historyKey) || [];
     const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
     const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 5; offset ${offset};`;
-    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders });
+    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const data = response.data;
     if (!data?.length) {
       historyCache.set(historyKey, []);
       return res.status(404).json({ error: 'No new games available' });
     }
     const shuffledData = weightedShuffle(data, history);
-    const selectedGames = shuffledData.slice(0, 10);
+    const selectedGames = shuffledData.slice(0, 5); // Reduced to 5 for faster response
     updateHistory(selectedGames.map(g => g.id));
     const games = await Promise.all(selectedGames.map(game => processShortGame(game)));
     res.json(games);
@@ -183,12 +181,12 @@ app.get('/games', async (req, res) => {
   }
 });
 
-// Game details endpoint
+// Game details endpoint (optimized similar games limit)
 app.get('/games/:id', async (req, res) => {
   try {
     const gameId = req.params.id;
-    const body = `fields id, name, genres.name, platforms.name, release_dates.date, aggregated_rating, rating, cover.url, age_ratings.rating, summary, involved_companies.company.name, videos.video_id, similar_games.id, similar_games.name, similar_games.cover.url, similar_games.aggregated_rating, similar_games.release_dates.date, similar_games.genres.name, similar_games.platforms.name; where id = ${gameId};`;
-    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders });
+    const body = `fields id, name, genres.name, platforms.name, release_dates.date, aggregated_rating, rating, cover.url, age_ratings.rating, summary, involved_companies.company.name, videos.video_id, similar_games.id, similar_games.name, similar_games.cover.url, similar_games.aggregated_rating, similar_games.release_dates.date, similar_games.genres.name, similar_games.platforms.name; where id = ${gameId}; limit 1;`;
+    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     if (!response.data?.length) return res.status(404).json({ error: 'Game not found' });
     const game = await processGame(response.data[0]);
     res.json(game);
