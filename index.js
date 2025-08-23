@@ -5,23 +5,38 @@ const sharp = require('sharp');
 const fs = require('fs').promises;
 const path = require('path');
 const NodeCache = require('node-cache');
-
 const app = express();
 const port = process.env.PORT || 3000;
 const cache = new NodeCache({ stdTTL: 86400 }); // 24-hour cache
 const historyCache = new NodeCache({ stdTTL: 604800 }); // 7-day history
 const historyKey = 'recent_games';
-const favoriteCountsFile = path.join(__dirname, 'favorite_counts.json'); // File to store favorite counts
-
+const favoriteCountsFile = path.join(__dirname, 'favorite_counts.json');
+const statusCountsFile = path.join(__dirname, 'status_counts.json');
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE'], allowedHeaders: ['Content-Type'] }));
 app.use(express.json());
 app.use('/images', express.static(path.join(__dirname, 'images')));
-
 const clientId = '6suowimw8bemqf3u9gurh7qnpx74sd';
 const accessToken = 'q4hi62k3igoelslpmuka0vw2uwz8gv';
 const igdbUrl = 'https://api.igdb.com/v4/games';
 const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
 const igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK' });
+});
+
+// Keep-alive mechanism
+function keepAlive() {
+  setInterval(async () => {
+    try {
+      await axios.get(`http://localhost:${port}/health`);
+      console.log('Keep-alive ping sent');
+    } catch (error) {
+      console.error('Keep-alive ping failed:', error.message);
+    }
+  }, 300000); // Ping every 5 minutes
+}
 
 // Load favorite counts from file
 async function loadFavoriteCounts() {
@@ -46,6 +61,29 @@ async function saveFavoriteCounts(counts) {
   }
 }
 
+// Load status counts from file
+async function loadStatusCounts() {
+  try {
+    const data = await fs.readFile(statusCountsFile, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return {};
+    }
+    console.error('Error loading status counts:', error.message);
+    return {};
+  }
+}
+
+// Save status counts to file
+async function saveStatusCounts(counts) {
+  try {
+    await fs.writeFile(statusCountsFile, JSON.stringify(counts, null, 2));
+  } catch (error) {
+    console.error('Error saving status counts:', error.message);
+  }
+}
+
 // Weighted shuffle to prioritize less recently shown games
 function weightedShuffle(array, history) {
   const weights = array.map(game => {
@@ -64,7 +102,7 @@ function updateHistory(gameIds) {
   historyCache.set(historyKey, history);
 }
 
-// Enhance image using Sharp (optimized to skip if not needed)
+// Enhance image using Sharp
 async function enhanceImage(imageUrl) {
   if (!imageUrl || imageUrl === 'N/A') return imageUrl;
   const cached = cache.get(imageUrl);
@@ -89,7 +127,7 @@ async function enhanceImage(imageUrl) {
   }
 }
 
-// Get Steam cover (with timeout and caching)
+// Get Steam cover
 async function getSteamCover(gameName, platforms) {
   if (!platforms.includes('Steam')) return null;
   const cacheKey = `steam_${gameName}`;
@@ -110,13 +148,13 @@ async function getSteamCover(gameName, platforms) {
   }
 }
 
-// Get game cover (parallelized and optimized)
+// Get game cover
 async function getGameCover(gameName, platforms, igdbCover) {
   const [steamCover] = await Promise.all([getSteamCover(gameName, platforms)]);
-  return steamCover || (igdbCover !== 'N/A' ? enhanceImage(igdbCover) : igdbCover);
+  return steamCover || (igdbCover !== 'N/A' ? await enhanceImage(igdbCover) : igdbCover);
 }
 
-// Process short game info (minimized fields)
+// Process short game info
 async function processShortGame(game) {
   const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
   const platforms = game.platforms ? game.platforms.map(p => p.name) : ['N/A'];
@@ -131,9 +169,11 @@ async function processShortGame(game) {
   };
 }
 
-// Process full game info (optimized similar games)
+// Process full game info
 async function processGame(game) {
   const favoriteCounts = await loadFavoriteCounts();
+  const statusCounts = await loadStatusCounts();
+  const gameStatusCounts = statusCounts[game.id] || {};
   const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
   const platforms = game.platforms ? game.platforms.map(p => p.name) : ['N/A'];
   const genres = game.genres ? game.genres.map(g => g.name) : ['N/A'];
@@ -168,11 +208,16 @@ async function processGame(game) {
     developers: game.involved_companies ? game.involved_companies.map(c => c.company.name) : ['N/A'],
     videos: game.videos ? game.videos.map(v => `https://www.youtube.com/watch?v=${v.video_id}`).slice(0, 3) : ['N/A'],
     similar_games: similarGames,
-    favorite: favoriteCounts[game.id] || 0 // Add favorite count
+    favorite: favoriteCounts[game.id] || 0,
+    playing: gameStatusCounts.playing || 0,
+    ill_play: gameStatusCounts.ill_play || 0,
+    passed: gameStatusCounts.passed || 0,
+    postponed: gameStatusCounts.postponed || 0,
+    abandoned: gameStatusCounts.abandoned || 0
   };
 }
 
-// Popular games endpoint (optimized query)
+// Popular games endpoint
 app.get('/popular', async (req, res) => {
   try {
     const body = 'fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit 10;';
@@ -185,7 +230,7 @@ app.get('/popular', async (req, res) => {
   }
 });
 
-// Random games endpoint with improved randomness (optimized limit)
+// Random games endpoint
 app.get('/games', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -210,7 +255,7 @@ app.get('/games', async (req, res) => {
   }
 });
 
-// Game details endpoint (optimized similar games limit)
+// Game details endpoint
 app.get('/games/:id', async (req, res) => {
   try {
     const gameId = req.params.id;
@@ -244,7 +289,7 @@ app.delete('/games/:id/favorite', async (req, res) => {
   try {
     const gameId = req.params.id;
     const favoriteCounts = await loadFavoriteCounts();
-    favoriteCounts[gameId] = Math.max((favoriteCounts[gameId] || 0) - 1, 0); // Prevent negative counts
+    favoriteCounts[gameId] = Math.max((favoriteCounts[gameId] || 0) - 1, 0);
     await saveFavoriteCounts(favoriteCounts);
     res.json({ favorite: favoriteCounts[gameId] });
   } catch (error) {
@@ -253,9 +298,50 @@ app.delete('/games/:id/favorite', async (req, res) => {
   }
 });
 
+// Status update endpoint
+const validStatuses = ['playing', 'ill_play', 'passed', 'postponed', 'abandoned'];
+app.post('/games/:id/status/:status', async (req, res) => {
+  const gameId = req.params.id;
+  const status = req.params.status.toLowerCase();
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'Invalid status' });
+  }
+  try {
+    const statusCounts = await loadStatusCounts();
+    const gameStatusCounts = statusCounts[gameId] || {};
+    gameStatusCounts[status] = (gameStatusCounts[status] || 0) + 1;
+    statusCounts[gameId] = gameStatusCounts;
+    await saveStatusCounts(statusCounts);
+    res.json({ [status]: gameStatusCounts[status] });
+  } catch (error) {
+    console.error(`Error /games/:id/status/${status} (POST): ${error.message}`);
+    res.status(500).json({ error: `Failed to increment ${status} count: ${error.message}` });
+  }
+});
+
+app.delete('/games/:id/status/:status', async (req, res) => {
+  const gameId = req.params.id;
+  const status = req.params.status.toLowerCase();
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'Invalid status' });
+  }
+  try {
+    const statusCounts = await loadStatusCounts();
+    const gameStatusCounts = statusCounts[gameId] || {};
+    gameStatusCounts[status] = Math.max((gameStatusCounts[status] || 0) - 1, 0);
+    statusCounts[gameId] = gameStatusCounts;
+    await saveStatusCounts(statusCounts);
+    res.json({ [status]: gameStatusCounts[status] });
+  } catch (error) {
+    console.error(`Error /games/:id/status/${status} (DELETE): ${error.message}`);
+    res.status(500).json({ error: `Failed to decrement ${status} count: ${error.message}` });
+  }
+});
+
 // Start server with error handling
 const server = app.listen(port, () => {
   console.log(`Server running on port ${port}`);
+  keepAlive(); // Start keep-alive mechanism
 }).on('error', (err) => {
   console.error('Server failed to start:', err.message);
 });
@@ -267,4 +353,4 @@ process.on('SIGTERM', () => {
   });
 });
 
-module.exports = app; // For testing locally if needed
+module.exports = app;
