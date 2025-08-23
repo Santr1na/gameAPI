@@ -5,19 +5,46 @@ const sharp = require('sharp');
 const fs = require('fs').promises;
 const path = require('path');
 const NodeCache = require('node-cache');
+
 const app = express();
 const port = process.env.PORT || 3000;
 const cache = new NodeCache({ stdTTL: 86400 }); // 24-hour cache
 const historyCache = new NodeCache({ stdTTL: 604800 }); // 7-day history
 const historyKey = 'recent_games';
+const favoriteCountsFile = path.join(__dirname, 'favorite_counts.json'); // File to store favorite counts
+
 app.use(cors({ origin: '*', methods: ['GET', 'POST'], allowedHeaders: ['Content-Type'] }));
 app.use(express.json());
 app.use('/images', express.static(path.join(__dirname, 'images')));
+
 const clientId = '6suowimw8bemqf3u9gurh7qnpx74sd';
 const accessToken = 'q4hi62k3igoelslpmuka0vw2uwz8gv';
 const igdbUrl = 'https://api.igdb.com/v4/games';
 const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
 const igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
+
+// Load favorite counts from file
+async function loadFavoriteCounts() {
+  try {
+    const data = await fs.readFile(favoriteCountsFile, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return {};
+    }
+    console.error('Error loading favorite counts:', error.message);
+    return {};
+  }
+}
+
+// Save favorite counts to file
+async function saveFavoriteCounts(counts) {
+  try {
+    await fs.writeFile(favoriteCountsFile, JSON.stringify(counts, null, 2));
+  } catch (error) {
+    console.error('Error saving favorite counts:', error.message);
+  }
+}
 
 // Weighted shuffle to prioritize less recently shown games
 function weightedShuffle(array, history) {
@@ -106,6 +133,7 @@ async function processShortGame(game) {
 
 // Process full game info (optimized similar games)
 async function processGame(game) {
+  const favoriteCounts = await loadFavoriteCounts();
   const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
   const platforms = game.platforms ? game.platforms.map(p => p.name) : ['N/A'];
   const genres = game.genres ? game.genres.map(g => g.name) : ['N/A'];
@@ -139,7 +167,8 @@ async function processGame(game) {
     summary,
     developers: game.involved_companies ? game.involved_companies.map(c => c.company.name) : ['N/A'],
     videos: game.videos ? game.videos.map(v => `https://www.youtube.com/watch?v=${v.video_id}`).slice(0, 3) : ['N/A'],
-    similar_games: similarGames
+    similar_games: similarGames,
+    favorite: favoriteCounts[game.id] || 0 // Add favorite count
   };
 }
 
@@ -193,6 +222,20 @@ app.get('/games/:id', async (req, res) => {
   } catch (error) {
     console.error(`Error /games/:id: ${error.message}`);
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
+  }
+});
+
+// Increment favorite count endpoint
+app.post('/games/:id/favorite', async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const favoriteCounts = await loadFavoriteCounts();
+    favoriteCounts[gameId] = (favoriteCounts[gameId] || 0) + 1;
+    await saveFavoriteCounts(favoriteCounts);
+    res.json({ favorite: favoriteCounts[gameId] });
+  } catch (error) {
+    console.error(`Error /games/:id/favorite: ${error.message}`);
+    res.status(500).json({ error: 'Failed to increment favorite count: ' + error.message });
   }
 });
 
