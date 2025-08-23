@@ -13,7 +13,7 @@ const historyCache = new NodeCache({ stdTTL: 604800 }); // 7-day history
 const historyKey = 'recent_games';
 const favoriteCountsFile = path.join(__dirname, 'favorite_counts.json'); // File to store favorite counts
 
-app.use(cors({ origin: '*', methods: ['GET', 'POST'], allowedHeaders: ['Content-Type'] }));
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE'], allowedHeaders: ['Content-Type'] }));
 app.use(express.json());
 app.use('/images', express.static(path.join(__dirname, 'images')));
 
@@ -234,8 +234,22 @@ app.post('/games/:id/favorite', async (req, res) => {
     await saveFavoriteCounts(favoriteCounts);
     res.json({ favorite: favoriteCounts[gameId] });
   } catch (error) {
-    console.error(`Error /games/:id/favorite: ${error.message}`);
+    console.error(`Error /games/:id/favorite (POST): ${error.message}`);
     res.status(500).json({ error: 'Failed to increment favorite count: ' + error.message });
+  }
+});
+
+// Decrement favorite count endpoint
+app.delete('/games/:id/favorite', async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const favoriteCounts = await loadFavoriteCounts();
+    favoriteCounts[gameId] = Math.max((favoriteCounts[gameId] || 0) - 1, 0); // Prevent negative counts
+    await saveFavoriteCounts(favoriteCounts);
+    res.json({ favorite: favoriteCounts[gameId] });
+  } catch (error) {
+    console.error(`Error /games/:id/favorite (DELETE): ${error.message}`);
+    res.status(500).json({ error: 'Failed to decrement favorite count: ' + error.message });
   }
 });
 
