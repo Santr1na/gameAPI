@@ -5,7 +5,6 @@ const sharp = require('sharp');
 const fs = require('fs').promises;
 const path = require('path');
 const NodeCache = require('node-cache');
-const { AtomicInteger } = require('atomic-integer'); // Для потокобезопасного счётчика
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -335,6 +334,24 @@ app.delete('/games/:id/status/:status', async (req, res) => {
   } catch (error) {
     console.error(`Error /games/:id/status/${status} (DELETE):`, error.message);
     res.status(500).json({ error: `Failed to decrement ${status} count: ${error.message}` });
+  }
+});
+
+// Обработка "Not Playing" как специального случая
+app.delete('/games/:id/status', async (req, res) => {
+  const gameId = req.params.id;
+  try {
+    const statusCounts = await loadStatusCounts();
+    const gameStatusCounts = statusCounts[gameId] || {};
+    validStatuses.forEach(status => {
+      gameStatusCounts[status] = 0;
+    });
+    statusCounts[gameId] = gameStatusCounts;
+    await saveStatusCounts(statusCounts);
+    res.json({ message: 'All statuses reset to 0' });
+  } catch (error) {
+    console.error(`Error /games/:id/status (DELETE):`, error.message);
+    res.status(500).json({ error: 'Failed to reset statuses: ' + error.message });
   }
 });
 
