@@ -5,6 +5,8 @@ const sharp = require('sharp');
 const fs = require('fs').promises;
 const path = require('path');
 const NodeCache = require('node-cache');
+const cron = require('node-cron'); // Добавляем node-cron для планирования задач
+
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -29,16 +31,19 @@ const igdbUrl = 'https://api.igdb.com/v4/games';
 const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
 const igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
 
-// Механизм keep-alive
-function keepAlive() {
-  setInterval(async () => {
+// Механизм активности с использованием cron
+function scheduleKeepAlive() {
+  cron.schedule('*/5 * * * *', async () => { // Каждые 5 минут
     try {
       await axios.get(`http://localhost:${port}/health`);
       console.log('Keep-alive ping sent at', new Date().toISOString());
     } catch (error) {
       console.error('Keep-alive ping failed:', error.message);
     }
-  }, 300000); // Каждые 5 минут
+  }, {
+    scheduled: true,
+    timezone: 'Europe/Kiev' // Учитываем ваш часовой пояс (EEST)
+  });
 }
 
 // Загрузка и сохранение данных
@@ -102,23 +107,20 @@ async function enhanceImage(imageUrl) {
   if (!imageUrl || imageUrl === 'N/A') return imageUrl;
   const cached = cache.get(imageUrl);
   if (cached) return cached;
-
   try {
-    const imageResponse = await axios.get(imageUrl.replace('t_thumb', 't_cover_big'), { 
-      responseType: 'arraybuffer', 
-      timeout: 5000 
+    const imageResponse = await axios.get(imageUrl.replace('t_thumb', 't_cover_big'), {
+      responseType: 'arraybuffer',
+      timeout: 5000
     });
     const imageBuffer = Buffer.from(imageResponse.data);
     const outputDir = path.join(__dirname, 'images');
     await fs.mkdir(outputDir, { recursive: true });
     const outputFilename = `enhanced_${path.basename(imageUrl)}`.replace(/[^a-zA-Z0-9.]/g, '_');
     const outputPath = path.join(outputDir, outputFilename);
-
     await sharp(imageBuffer)
       .resize({ width: 800, height: 1200, fit: 'inside', kernel: 'lanczos3' })
       .toFormat('jpeg', { quality: 85 })
       .toFile(outputPath);
-
     const enhancedUrl = `/images/${outputFilename}`;
     cache.set(imageUrl, enhancedUrl);
     return enhancedUrl;
@@ -133,7 +135,6 @@ async function getSteamCover(gameName, platforms) {
   const cacheKey = `steam_${gameName.toLowerCase()}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
-
   try {
     const steamResponse = await axios.get(steamUrl, { timeout: 5000 });
     const app = steamResponse.data.applist.apps.find(a => a.name.toLowerCase() === gameName.toLowerCase());
@@ -176,7 +177,7 @@ async function processGame(game) {
   const platforms = game.platforms ? game.platforms.map(p => p.name) : ['N/A'];
   const genres = game.genres ? game.genres.map(g => g.name) : ['N/A'];
   const summary = game.summary || 'N/A';
-  const similarGames = game.similar_games?.length 
+  const similarGames = game.similar_games?.length
     ? await Promise.all(game.similar_games.slice(0, 3).map(async s => {
         const similarCoverImage = s.cover ? `https:${s.cover.url}` : 'N/A';
         const similarPlatforms = s.platforms ? s.platforms.map(p => p.name) : ['N/A'];
@@ -189,9 +190,8 @@ async function processGame(game) {
           main_genre: s.genres?.[0]?.name || 'N/A',
           platforms: similarPlatforms
         };
-      })) 
+      }))
     : ['N/A'];
-
   return {
     id: game.id,
     name: game.name,
@@ -355,10 +355,10 @@ app.delete('/games/:id/status', async (req, res) => {
   }
 });
 
-// Запуск сервера
+// Запуск сервера с активацией cron
 const server = app.listen(port, () => {
   console.log(`Server running on port ${port} at ${new Date().toISOString()}`);
-  keepAlive(); // Запуск механизма keep-alive
+  scheduleKeepAlive(); // Активируем cron
 }).on('error', (err) => {
   console.error('Server failed to start:', err.message);
 });
