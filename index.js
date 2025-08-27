@@ -33,7 +33,7 @@ const igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessTo
 
 // Механизм активности с использованием cron
 function scheduleKeepAlive() {
-  cron.schedule('*/5 * * * *', async () => { // Каждые 5 минут
+  cron.schedule('*/2 * * * *', async () => { // Каждые 5 минут
     try {
       await axios.get(`http://localhost:${port}/health`);
       console.log('Keep-alive ping sent at', new Date().toISOString());
@@ -239,7 +239,7 @@ app.get('/games', async (req, res) => {
     const offset = (page - 1) * 50;
     const history = historyCache.get(historyKey) || [];
     const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
+    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 4; offset ${offset};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const data = response.data;
     if (!data?.length) {
