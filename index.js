@@ -5,8 +5,7 @@ const sharp = require('sharp');
 const fs = require('fs').promises;
 const path = require('path');
 const NodeCache = require('node-cache');
-const cron = require('node-cron'); // Добавляем node-cron для планирования задач
-
+const cron = require('node-cron'); // Для планирования задач
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -32,17 +31,21 @@ const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
 const igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
 
 // Механизм активности с использованием cron
-function scheduleKeepAlive() {
-  cron.schedule('*/2 * * * *', async () => { // Каждые 5 минут
+function scheduleKeepAlive(publicUrl) {
+  if (!publicUrl) {
+    console.warn('No public URL provided for keep-alive ping. Set PUBLIC_URL environment variable.');
+    return;
+  }
+  cron.schedule('* * * * *', async () => { // Каждую минуту
     try {
-      await axios.get(`http://localhost:${port}/health`);
-      console.log('Keep-alive ping sent at', new Date().toISOString());
+      await axios.get(publicUrl + '/health', { timeout: 5000 });
+      console.log('Keep-alive ping sent to', publicUrl, 'at', new Date().toISOString());
     } catch (error) {
       console.error('Keep-alive ping failed:', error.message);
     }
   }, {
     scheduled: true,
-    timezone: 'Europe/Kiev' // Учитываем ваш часовой пояс (EEST)
+    timezone: 'Europe/Kiev' // EEST
   });
 }
 
@@ -220,7 +223,6 @@ async function processGame(game) {
 
 // Эндпоинты
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
-
 app.get('/popular', async (req, res) => {
   try {
     const body = 'fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit 10;';
@@ -232,14 +234,13 @@ app.get('/popular', async (req, res) => {
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
 });
-
 app.get('/games', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const offset = (page - 1) * 50;
     const history = historyCache.get(historyKey) || [];
     const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 4; offset ${offset};`;
+    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const data = response.data;
     if (!data?.length) {
@@ -256,7 +257,6 @@ app.get('/games', async (req, res) => {
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
 });
-
 app.get('/games/:id', async (req, res) => {
   try {
     const gameId = req.params.id;
@@ -270,7 +270,6 @@ app.get('/games/:id', async (req, res) => {
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
 });
-
 app.post('/games/:id/favorite', async (req, res) => {
   try {
     const gameId = req.params.id;
@@ -283,7 +282,6 @@ app.post('/games/:id/favorite', async (req, res) => {
     res.status(500).json({ error: 'Failed to increment favorite count: ' + error.message });
   }
 });
-
 app.delete('/games/:id/favorite', async (req, res) => {
   try {
     const gameId = req.params.id;
@@ -296,9 +294,7 @@ app.delete('/games/:id/favorite', async (req, res) => {
     res.status(500).json({ error: 'Failed to decrement favorite count: ' + error.message });
   }
 });
-
 const validStatuses = ['playing', 'ill_play', 'passed', 'postponed', 'abandoned'];
-
 app.post('/games/:id/status/:status', async (req, res) => {
   const gameId = req.params.id;
   const status = req.params.status.toLowerCase();
@@ -317,7 +313,6 @@ app.post('/games/:id/status/:status', async (req, res) => {
     res.status(500).json({ error: `Failed to increment ${status} count: ${error.message}` });
   }
 });
-
 app.delete('/games/:id/status/:status', async (req, res) => {
   const gameId = req.params.id;
   const status = req.params.status.toLowerCase();
@@ -336,7 +331,6 @@ app.delete('/games/:id/status/:status', async (req, res) => {
     res.status(500).json({ error: `Failed to decrement ${status} count: ${error.message}` });
   }
 });
-
 // Обработка "Not Playing" как специального случая
 app.delete('/games/:id/status', async (req, res) => {
   const gameId = req.params.id;
@@ -358,7 +352,8 @@ app.delete('/games/:id/status', async (req, res) => {
 // Запуск сервера с активацией cron
 const server = app.listen(port, () => {
   console.log(`Server running on port ${port} at ${new Date().toISOString()}`);
-  scheduleKeepAlive(); // Активируем cron
+  const publicUrl = process.env.PUBLIC_URL || `http://your-server-url:${port}`; // Укажите ваш публичный URL
+  scheduleKeepAlive(publicUrl); // Активируем cron с публичным URL
 }).on('error', (err) => {
   console.error('Server failed to start:', err.message);
 });
