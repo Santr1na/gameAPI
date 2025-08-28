@@ -352,7 +352,7 @@ app.delete('/games/:id/status', async (req, res) => {
 // Запуск сервера с активацией cron
 const server = app.listen(port, () => {
   console.log(`Server running on port ${port} at ${new Date().toISOString()}`);
-  const publicUrl = process.env.PUBLIC_URL || `http://your-server-url:${port}`; // Укажите ваш публичный URL
+  const publicUrl = process.env.PUBLIC_URL || `https://gameapi-7i62.onrender.com:${port}`; // Укажите ваш публичный URL
   scheduleKeepAlive(publicUrl); // Активируем cron с публичным URL
 }).on('error', (err) => {
   console.error('Server failed to start:', err.message);
