@@ -36,18 +36,48 @@ function scheduleKeepAlive(publicUrl) {
     console.warn('No public URL provided for keep-alive ping. Set PUBLIC_URL environment variable.');
     return;
   }
-  cron.schedule('* * * * *', async () => { // Каждую минуту
+  cron.schedule('*/10 * * * *', async () => { // Каждые 10 минут, как у сервера новостей
     try {
-      await axios.get(publicUrl + '/health', { timeout: 5000 });
-      console.log('Keep-alive ping sent to', publicUrl, 'at', new Date().toISOString());
+      const response = await axios.get(publicUrl + '/health', { timeout: 5000 });
+      if (response.status === 200) {
+        console.log('Keep-alive ping successful to', publicUrl, 'at', new Date().toISOString());
+      } else {
+        console.warn('Keep-alive ping received non-200 status:', response.status);
+      }
     } catch (error) {
-      console.error('Keep-alive ping failed:', error.message);
+      console.error('Keep-alive ping failed:', error.message, 'URL:', publicUrl);
     }
   }, {
     scheduled: true,
     timezone: 'Europe/Kiev' // EEST
   });
 }
+
+// Добавим периодическую задачу для проверки популярных игр
+cron.schedule('*/10 * * * *', async () => {
+  try {
+    console.log('Running scheduled fetch of popular games...');
+    const response = await axios.post(igdbUrl, 'fields id, name, cover.url, aggregated_rating; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit 1;', { headers: igdbHeaders, timeout: 5000 });
+    if (response.data.length > 0) {
+      console.log('Scheduled fetch of popular games completed:', response.data.length, 'items');
+    }
+  } catch (error) {
+    console.error('Error during scheduled fetch of popular games:', error.message);
+  }
+}, {
+  scheduled: true,
+  timezone: 'Europe/Kiev'
+});
+
+// Запуск сервера с активацией cron
+const server = app.listen(port, () => {
+  console.log(`Server running on port ${port} at ${new Date().toISOString()}`);
+  const publicUrl = process.env.PUBLIC_URL || `https://gameapi-7i62.onrender.com`; // Используем реальный URL без порта
+  console.log('Using public URL for keep-alive:', publicUrl); // Отладочный лог
+  scheduleKeepAlive(publicUrl); // Активируем cron с публичным URL
+}).on('error', (err) => {
+  console.error('Server failed to start:', err.message);
+});
 
 // Загрузка и сохранение данных
 async function loadFavoriteCounts() {
