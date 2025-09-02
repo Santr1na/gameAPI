@@ -69,16 +69,6 @@ cron.schedule('*/10 * * * *', async () => {
   timezone: 'Europe/Kiev'
 });
 
-// Запуск сервера с активацией cron
-const server = app.listen(port, () => {
-  console.log(`Server running on port ${port} at ${new Date().toISOString()}`);
-  const publicUrl = process.env.PUBLIC_URL || `https://gameapi-7i62.onrender.com`; // Используем реальный URL без порта
-  console.log('Using public URL for keep-alive:', publicUrl); // Отладочный лог
-  scheduleKeepAlive(publicUrl); // Активируем cron с публичным URL
-}).on('error', (err) => {
-  console.error('Server failed to start:', err.message);
-});
-
 // Загрузка и сохранение данных
 async function loadFavoriteCounts() {
   try {
@@ -250,7 +240,6 @@ async function processGame(game) {
     abandoned: gameStatusCounts.abandoned || 0
   };
 }
-
 // Эндпоинты
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 app.get('/popular', async (req, res) => {
@@ -378,21 +367,19 @@ app.delete('/games/:id/status', async (req, res) => {
     res.status(500).json({ error: 'Failed to reset statuses: ' + error.message });
   }
 });
-
-// Запуск сервера с активацией cron
-const server = app.listen(port, () => {
-  console.log(`Server running on port ${port} at ${new Date().toISOString()}`);
-  const publicUrl = process.env.PUBLIC_URL || `https://gameapi-7i62.onrender.com:${port}`; // Укажите ваш публичный URL
-  scheduleKeepAlive(publicUrl); // Активируем cron с публичным URL
-}).on('error', (err) => {
-  console.error('Server failed to start:', err.message);
-});
-
 // Грациозное завершение
 process.on('SIGTERM', () => {
   server.close(() => {
     console.log('Server terminated at', new Date().toISOString());
   });
 });
-
+// Запуск сервера с активацией cron
+const server = app.listen(port, () => {
+  console.log(`Server running on port ${port} at ${new Date().toISOString()}`);
+  const publicUrl = process.env.PUBLIC_URL || `https://gameapi-7i62.onrender.com`; // Используем реальный URL без порта
+  console.log('Using public URL for keep-alive:', publicUrl); // Отладочный лог
+  scheduleKeepAlive(publicUrl); // Активируем cron с публичным URL
+}).on('error', (err) => {
+  console.error('Server failed to start:', err.message);
+});
 module.exports = app;
