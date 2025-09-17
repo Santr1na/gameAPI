@@ -40,13 +40,17 @@ const igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessTo
 // Middleware для проверки авторизации
 async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
+  console.log('Auth header received:', authHeader); // Логируем заголовок
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    console.log('Missing or invalid auth header');
     return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
   }
   const idToken = authHeader.split('Bearer ')[1];
+  console.log('Verifying token:', idToken.slice(0, 10) + '...'); // Логируем начало токена
   try {
     const decodedToken = await admin.auth().verifyIdToken(idToken);
-    req.user = decodedToken; // Сохраняем данные пользователя для последующей обработки
+    console.log('Token verified for user:', decodedToken.uid);
+    req.user = decodedToken;
     next();
   } catch (error) {
     console.error('Authentication error:', error.message);
@@ -335,6 +339,18 @@ app.get('/games/:id', async (req, res) => {
   } catch (error) {
     console.error('Error /games/:id:', error.message);
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
+  }
+});
+
+app.get('/games/:id/favorite', authenticate, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const favoriteCounts = await loadFavoriteCounts();
+    const count = favoriteCounts[gameId] || 0;
+    res.json({ favorite: count });
+  } catch (error) {
+    console.error('Error /games/:id/favorite (GET):', error.message);
+    res.status(500).json({ error: 'Failed to get favorite count' });
   }
 });
 
