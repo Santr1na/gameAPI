@@ -33,7 +33,7 @@ app.use('/images', express.static(path.join(__dirname, 'images')));
 
 // Конфигурация IGDB
 const clientId = process.env.IGDB_CLIENT_ID || '6suowimw8bemqf3u9gurh7qnpx74sd';
-const clientSecret = process.env.IGDB_CLIENT_SECRET || 's9bekd4z8v8byc8r9e9o7kzw7gs8fq'; // Укажите ваш client_secret
+const clientSecret = process.env.IGDB_CLIENT_SECRET || 's9bekd4z8v8byc8r9e9o7kzw7gs8fq';
 let accessToken = process.env.IGDB_ACCESS_TOKEN || 'q4hi62k3igoelslpmuka0vw2uwz8gv';
 const igdbUrl = 'https://api.igdb.com/v4/games';
 const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
@@ -60,8 +60,8 @@ async function refreshAccessToken() {
   }
 }
 
-// Периодическое обновление токена (каждые 50 дней)
-cron.schedule('0 0 */50 * *', async () => {
+// Периодическое обновление токена (каждые 2 месяца, 1-го числа в полночь)
+cron.schedule('0 0 1 */2 *', async () => {
   console.log('Scheduled access token refresh...');
   try {
     await refreshAccessToken();
