@@ -6,12 +6,13 @@ const fs = require('fs').promises;
 const path = require('path');
 const NodeCache = require('node-cache');
 const cron = require('node-cron');
-const admin = require('firebase-admin'); // Добавляем Firebase Admin SDK
+const admin = require('firebase-admin');
+
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Инициализация Firebase Admin SDK
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}'); // Убедитесь, что переменная окружения содержит JSON-ключи
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
@@ -31,25 +32,57 @@ app.use(express.json());
 app.use('/images', express.static(path.join(__dirname, 'images')));
 
 // Конфигурация IGDB
-const clientId = '6suowimw8bemqf3u9gurh7qnpx74sd';
-const accessToken = 'q4hi62k3igoelslpmuka0vw2uwz8gv';
+const clientId = process.env.IGDB_CLIENT_ID || '6suowimw8bemqf3u9gurh7qnpx74sd';
+const clientSecret = process.env.IGDB_CLIENT_SECRET || 's9bekd4z8v8byc8r9e9o7kzw7gs8fq'; // Укажите ваш client_secret
+let accessToken = process.env.IGDB_ACCESS_TOKEN || 'q4hi62k3igoelslpmuka0vw2uwz8gv';
 const igdbUrl = 'https://api.igdb.com/v4/games';
 const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
-const igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
+let igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
+
+// Функция для обновления accessToken
+async function refreshAccessToken() {
+  try {
+    const response = await axios.post('https://id.twitch.tv/oauth2/token', null, {
+      params: {
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: 'client_credentials',
+      },
+      timeout: 5000,
+    });
+    accessToken = response.data.access_token;
+    igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
+    console.log('Access token refreshed:', accessToken.slice(0, 10) + '...', 'Expires in:', response.data.expires_in);
+    return accessToken;
+  } catch (error) {
+    console.error('Failed to refresh access token:', error.message);
+    throw error;
+  }
+}
+
+// Периодическое обновление токена (каждые 50 дней)
+cron.schedule('0 0 */50 * *', async () => {
+  console.log('Scheduled access token refresh...');
+  try {
+    await refreshAccessToken();
+  } catch (error) {
+    console.error('Scheduled token refresh failed:', error.message);
+  }
+}, {
+  scheduled: true,
+  timezone: 'Europe/Kiev',
+});
 
 // Middleware для проверки авторизации
 async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
-  console.log('Auth header received:', authHeader); // Логируем заголовок
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     console.log('Missing or invalid auth header');
     return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
   }
   const idToken = authHeader.split('Bearer ')[1];
-  console.log('Verifying token:', idToken.slice(0, 10) + '...'); // Логируем начало токена
   try {
     const decodedToken = await admin.auth().verifyIdToken(idToken);
-    console.log('Token verified for user:', decodedToken.uid);
     req.user = decodedToken;
     next();
   } catch (error) {
@@ -93,7 +126,17 @@ cron.schedule('*/10 * * * *', async () => {
       console.log('Scheduled fetch of popular games completed:', response.data.length, 'items');
     }
   } catch (error) {
-    console.error('Error during scheduled fetch of popular games:', error.message);
+    if (error.response?.status === 401) {
+      console.log('401 error in scheduled fetch, refreshing token...');
+      await refreshAccessToken();
+      const retryResponse = await axios.post(igdbUrl, 'fields id, name, cover.url, aggregated_rating; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit 1;', {
+        headers: igdbHeaders,
+        timeout: 5000,
+      });
+      console.log('Retry fetch successful:', retryResponse.data.length, 'items');
+    } else {
+      console.error('Error during scheduled fetch of popular games:', error.message);
+    }
   }
 }, {
   scheduled: true,
@@ -299,6 +342,18 @@ app.get('/popular', async (req, res) => {
     const games = await Promise.all(response.data.map((game) => processShortGame(game)));
     res.json(games);
   } catch (error) {
+    if (error.response?.status === 401) {
+      console.log('401 error in /popular, refreshing token...');
+      await refreshAccessToken();
+      try {
+        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
+        const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
+        return res.json(games);
+      } catch (retryError) {
+        console.error('Retry error /popular:', retryError.message);
+        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
+      }
+    }
     console.error('Error /popular:', error.message);
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
@@ -323,6 +378,31 @@ app.get('/games', async (req, res) => {
     const games = await Promise.all(selectedGames.map((game) => processShortGame(game)));
     res.json(games);
   } catch (error) {
+    if (error.response?.status === 401) {
+      console.log('401 error in /games, refreshing token...');
+      await refreshAccessToken();
+      try {
+        const page = parseInt(req.query.page) || 1;
+        const offset = (page - 1) * 50;
+        const history = historyCache.get(historyKey) || [];
+        const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
+        const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
+        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
+        const data = retryResponse.data;
+        if (!data?.length) {
+          historyCache.set(historyKey, []);
+          return res.status(404).json({ error: 'No new games available' });
+        }
+        const shuffledData = weightedShuffle(data, history);
+        const selectedGames = shuffledData.slice(0, 5);
+        updateHistory(selectedGames.map((g) => g.id));
+        const games = await Promise.all(selectedGames.map((game) => processShortGame(game)));
+        return res.json(games);
+      } catch (retryError) {
+        console.error('Retry error /games:', retryError.message);
+        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
+      }
+    }
     console.error('Error /games:', error.message);
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
@@ -337,6 +417,21 @@ app.get('/games/:id', async (req, res) => {
     const game = await processGame(response.data[0]);
     res.json(game);
   } catch (error) {
+    if (error.response?.status === 401) {
+      console.log('401 error in /games/:id, refreshing token...');
+      await refreshAccessToken();
+      try {
+        const gameId = req.params.id;
+        const body = `fields id, name, genres.name, platforms.name, release_dates.date, aggregated_rating, rating, cover.url, age_ratings.rating, summary, involved_companies.company.name, videos.video_id, similar_games.id, similar_games.name, similar_games.cover.url, similar_games.aggregated_rating, similar_games.release_dates.date, similar_games.genres.name, similar_games.platforms.name; where id = ${gameId}; limit 1;`;
+        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
+        if (!retryResponse.data?.length) return res.status(404).json({ error: 'Game not found' });
+        const game = await processGame(retryResponse.data[0]);
+        return res.json(game);
+      } catch (retryError) {
+        console.error('Retry error /games/:id:', retryError.message);
+        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
+      }
+    }
     console.error('Error /games/:id:', error.message);
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
@@ -354,7 +449,6 @@ app.get('/games/:id/favorite', authenticate, async (req, res) => {
   }
 });
 
-// Эндпоинты с проверкой авторизации
 app.post('/games/:id/favorite', authenticate, async (req, res) => {
   try {
     const gameId = req.params.id;
@@ -446,11 +540,16 @@ process.on('SIGTERM', () => {
 });
 
 // Запуск сервера
-const server = app.listen(port, () => {
+const server = app.listen(port, async () => {
   console.log(`Server running on port ${port} at ${new Date().toISOString()}`);
   const publicUrl = process.env.PUBLIC_URL || `https://gameapi-7i62.onrender.com`;
   console.log('Using public URL for keep-alive:', publicUrl);
-  scheduleKeepAlive(publicUrl);
+  try {
+    await refreshAccessToken(); // Обновляем токен при старте сервера
+    scheduleKeepAlive(publicUrl);
+  } catch (error) {
+    console.error('Initial token refresh failed:', error.message);
+  }
 }).on('error', (err) => {
   console.error('Server failed to start:', err.message);
 });
