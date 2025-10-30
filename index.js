@@ -312,7 +312,7 @@ app.get('/search', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   if (!query) return res.status(400).json({ error: 'Query required' });
   try {
-    const body = `fields id, name, cover.url; search "*${query}*"; sort follows desc; limit ${limit};`;
+    const body = `fields id, name, cover.url, aggregated_rating; search "${query}"; sort aggregated_rating desc; limit ${limit}; where aggregated_rating > 0;`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const games = await Promise.all(response.data.map((game) => processShortGame(game)));
     res.json(games);
@@ -321,7 +321,7 @@ app.get('/search', async (req, res) => {
       console.log('401 error in /search, refreshing token...');
       await refreshAccessToken();
       try {
-        const body = `fields id, name, cover.url; search "*${query}*"; sort follows desc; limit ${limit};`;
+        const body = `fields id, name, cover.url, aggregated_rating; search "${query}"; sort aggregated_rating desc; limit ${limit}; where aggregated_rating > 0;`;
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
         const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
         return res.json(games);
