@@ -6,23 +6,19 @@ const cron = require('node-cron');
 const admin = require('firebase-admin');
 const app = express();
 const port = process.env.PORT || 3000;
-
 // Инициализация Firebase Admin SDK
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 const db = admin.firestore();
-
 // Middleware
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json());
-
 // Конфигурация кэша
 const cache = new NodeCache({ stdTTL: 86400 }); // 24 часа
 const historyCache = new NodeCache({ stdTTL: 604800 }); // 7 дней
 const historyKey = 'recent_games';
-
 // Конфигурация IGDB
 const clientId = process.env.IGDB_CLIENT_ID || '6suowimw8bemqf3u9gurh7qnpx74sd';
 const clientSecret = process.env.IGDB_CLIENT_SECRET || 's9bekd4z8v8byc8r9e9o7kzw7gs8fq';
@@ -31,7 +27,6 @@ const igdbUrl = 'https://api.igdb.com/v4/games';
 const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
 let igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
 let steamApps = null;
-
 // Функция для получения steamApps
 async function getSteamApps() {
   if (!steamApps) return steamApps;
@@ -44,7 +39,6 @@ async function getSteamApps() {
     return [];
   }
 }
-
 // Функция для обновления accessToken
 async function refreshAccessToken() {
   try {
@@ -65,7 +59,6 @@ async function refreshAccessToken() {
     throw error;
   }
 }
-
 // Периодическое обновление токена (ежедневно)
 cron.schedule('0 0 * * *', async () => {
   console.log('Scheduled access token refresh...');
@@ -78,7 +71,6 @@ cron.schedule('0 0 * * *', async () => {
   scheduled: true,
   timezone: 'Europe/Kiev',
 });
-
 // Middleware для проверки авторизации
 async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -96,7 +88,6 @@ async function authenticate(req, res, next) {
     return res.status(403).json({ error: 'Forbidden: Invalid token' });
   }
 }
-
 // Механизм активности с использованием cron
 function scheduleKeepAlive(publicUrl) {
   if (!publicUrl) {
@@ -119,7 +110,6 @@ function scheduleKeepAlive(publicUrl) {
     timezone: 'Europe/Kiev',
   });
 }
-
 // Периодическая задача для проверки популярных игр
 cron.schedule('*/10 * * * *', async () => {
   try {
@@ -148,7 +138,6 @@ cron.schedule('*/10 * * * *', async () => {
   scheduled: true,
   timezone: 'Europe/Kiev',
 });
-
 // Загрузка и сохранение данных с Firestore
 async function loadFavoriteCounts() {
   try {
@@ -182,7 +171,6 @@ async function saveStatusCounts(counts) {
     console.error('Error saving status counts:', error.message);
   }
 }
-
 // Вспомогательные функции
 function weightedShuffle(array, history) {
   return array
@@ -324,7 +312,7 @@ app.get('/search', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   if (!query) return res.status(400).json({ error: 'Query required' });
   try {
-    const body = `fields id, name, cover.url; search "${query}"; limit ${limit};`;
+    const body = `fields id, name, cover.url; search "*${query}*"; sort aggregated_rating desc; limit ${limit}; where aggregated_rating > 0;`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const games = await Promise.all(response.data.map((game) => processShortGame(game)));
     res.json(games);
@@ -333,7 +321,7 @@ app.get('/search', async (req, res) => {
       console.log('401 error in /search, refreshing token...');
       await refreshAccessToken();
       try {
-        const body = `fields id, name, cover.url; search "${query}"; limit ${limit};`;
+        const body = `fields id, name, cover.url; search "*${query}*"; sort aggregated_rating desc; limit ${limit}; where aggregated_rating > 0;`;
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
         const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
         return res.json(games);
