@@ -29,7 +29,7 @@ let igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToke
 let steamApps = null;
 // Функция для получения steamApps
 async function getSteamApps() {
-  if (!steamApps) return steamApps;
+  if (steamApps) return steamApps;
   try {
     const response = await axios.get(steamUrl, { timeout: 5000 });
     steamApps = response.data.applist.apps;
@@ -521,3 +521,5 @@ const server = app.listen(port, async () => {
   console.error('Server failed to start:', err.message);
 });
 module.exports = app;
+ 
+при запросе https://gameapi-7i62.onrender.com/search?query=cou сервер отвечает 200OK и ничего больше, а должен по этим первым буквам найти самые популярные игры, которые имееют в наименовании эти символы и вывести
