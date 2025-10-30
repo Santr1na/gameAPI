@@ -521,5 +521,3 @@ const server = app.listen(port, async () => {
   console.error('Server failed to start:', err.message);
 });
 module.exports = app;
- 
-при запросе https://gameapi-7i62.onrender.com/search?query=cou сервер отвечает 200OK и ничего больше, а должен по этим первым буквам найти самые популярные игры, которые имееют в наименовании эти символы и вывести
