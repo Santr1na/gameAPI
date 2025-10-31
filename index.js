@@ -312,7 +312,7 @@ app.get('/search', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   if (!query) return res.status(400).json({ error: 'Query required' });
   try {
-    const body = `fields id, name, cover.url, aggregated_rating; search "${query}"; sort aggregated_rating desc; limit ${limit}; where aggregated_rating > 0;`;
+    const body = `fields id, name, cover.url, aggregated_rating; search "${query}"; where aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const games = await Promise.all(response.data.map((game) => processShortGame(game)));
     res.json(games);
