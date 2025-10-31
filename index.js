@@ -211,7 +211,7 @@ async function processShortGame(game) {
     id: game.id,
     name: game.name,
     cover_image: await getGameCover(game.name, platforms, coverImage),
-    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : 'N/A',
+    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : (game.rating ? Math.round(game.rating) : 'N/A'),
     description: game.summary || 'N/A'
   };
 }
