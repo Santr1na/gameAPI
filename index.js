@@ -321,7 +321,7 @@ app.get('/search', async (req, res) => {
       console.log('401 error in /search, refreshing token...');
       await refreshAccessToken();
       try {
-        const body = `fields id, name, cover.url, aggregated_rating; search "${query}"; sort aggregated_rating desc; limit ${limit}; where aggregated_rating > 0;`;
+        const body = fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; search "${query}*"; sort aggregated_rating desc; limit ${limit}; where version_parent = null & category = 0;;
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
         const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
         return res.json(games);
