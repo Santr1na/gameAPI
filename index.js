@@ -29,7 +29,7 @@ let igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToke
 let steamApps = null;
 // Функция для получения steamApps
 async function getSteamApps() {
-  if (steamApps) return steamApps;
+  if (!steamApps) return steamApps;
   try {
     const response = await axios.get(steamUrl, { timeout: 5000 });
     steamApps = response.data.applist.apps;
@@ -39,7 +39,7 @@ async function getSteamApps() {
     return [];
   }
 }
-
+// Функция для обновления accessToken
 async function refreshAccessToken() {
   try {
     const response = await axios.post('https://id.twitch.tv/oauth2/token', null, {
@@ -51,7 +51,7 @@ async function refreshAccessToken() {
       timeout: 5000,
     });
     accessToken = response.data.access_token;
-    igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/plain' };
+    igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
     console.log('Access token refreshed:', accessToken.slice(0, 10) + '...', 'Expires in:', response.data.expires_in);
     return accessToken;
   } catch (error) {
@@ -312,7 +312,7 @@ app.get('/search', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   if (!query) return res.status(400).json({ error: 'Query required' });
   try {
-    const body = `fields id, name, cover.url, aggregated_rating; search "${query}"; where aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
+    const body = `id, name, cover.url, aggregated_rating, release_dates.date; search "${query}*"; sort aggregated_rating desc; limit ${limit};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const games = await Promise.all(response.data.map((game) => processShortGame(game)));
     res.json(games);
@@ -321,7 +321,7 @@ app.get('/search', async (req, res) => {
       console.log('401 error in /search, refreshing token...');
       await refreshAccessToken();
       try {
-        const body = fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; search "${query}*"; sort aggregated_rating desc; limit ${limit}; where version_parent = null & category = 0;;
+        const body = `fields id, name, cover.url; search "${query}"; limit ${limit};`;
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
         const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
         return res.json(games);
