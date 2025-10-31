@@ -39,7 +39,7 @@ async function getSteamApps() {
     return [];
   }
 }
-// Функция для обновления accessToken
+
 async function refreshAccessToken() {
   try {
     const response = await axios.post('https://id.twitch.tv/oauth2/token', null, {
