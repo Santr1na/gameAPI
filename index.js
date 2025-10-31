@@ -25,7 +25,7 @@ const clientSecret = process.env.IGDB_CLIENT_SECRET || 's9bekd4z8v8byc8r9e9o7kzw
 let accessToken = process.env.IGDB_ACCESS_TOKEN || 'q4hi62k3igoelslpmuka0vw2uwz8gv';
 const igdbUrl = 'https://api.igdb.com/v4/games';
 const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
-let igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/plain' };
+let igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/plain', 'Accept': 'application/json' };
 let steamApps = null;
 // Функция для получения steamApps
 async function getSteamApps() {
