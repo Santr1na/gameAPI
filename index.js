@@ -20,7 +20,7 @@ const cache = new NodeCache({ stdTTL: 86400 }); // 24 часа
 const historyCache = new NodeCache({ stdTTL: 604800 }); // 7 дней
 const historyKey = 'recent_games';
 // Конфигурация RAWG
-const rawgKey = process.env.RAWG_API_KEY || '0bcf5522890b4384a2e67343191b3bd6';
+const rawgKey = process.env.RAWG_API_KEY;
 const rawgUrl = 'https://api.rawg.io/api/games';
 const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
 let steamApps = null;
