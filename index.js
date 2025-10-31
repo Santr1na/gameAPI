@@ -311,28 +311,28 @@ app.get('/search', async (req, res) => {
   const query = req.query.query;
   const limit = parseInt(req.query.limit) || 10;
   if (!query) return res.status(400).json({ error: 'Query required' });
-  try {
-    const body = `fields id, name, cover.url, aggregated_rating; search "${query}"; where aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
-    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-    const games = await Promise.all(response.data.map((game) => processShortGame(game)));
-    res.json(games);
-  } catch (error) {
-    if (error.response?.status === 401) {
-      console.log('401 error in /search, refreshing token...');
-      await refreshAccessToken();
-      try {
-        const body = fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; search "${query}*"; sort aggregated_rating desc; limit ${limit}; where version_parent = null & category = 0;;
-        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-        const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
-        return res.json(games);
-      } catch (retryError) {
-        console.error('Retry error /search:', retryError.message);
-        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
-      }
+try {
+  const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; search "${query}*"; where version_parent = null & category = 0 & aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
+  const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
+  const games = await Promise.all(response.data.map((game) => processShortGame(game)));
+  res.json(games);
+} catch (error) {
+  if (error.response?.status === 401) {
+    console.log('401 error in /search, refreshing token...');
+    await refreshAccessToken();
+    try {
+      const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; search "${query}*"; where version_parent = null & category = 0 & aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
+      const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
+      const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
+      return res.json(games);
+    } catch (retryError) {
+      console.error('Retry error /search:', retryError.message);
+      return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
     }
-    console.error('Error /search:', error.message);
-    res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
+  console.error('Error /search:', error.message);
+  res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
+}
 });
 app.get('/games', async (req, res) => {
   const limit = parseInt(req.query.limit) || 5;
