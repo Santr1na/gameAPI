@@ -19,17 +19,14 @@ app.use(express.json());
 const cache = new NodeCache({ stdTTL: 86400 }); // 24 часа
 const historyCache = new NodeCache({ stdTTL: 604800 }); // 7 дней
 const historyKey = 'recent_games';
-// Конфигурация IGDB
-const clientId = process.env.IGDB_CLIENT_ID || '6suowimw8bemqf3u9gurh7qnpx74sd';
-const clientSecret = process.env.IGDB_CLIENT_SECRET || 's9bekd4z8v8byc8r9e9o7kzw7gs8fq';
-let accessToken = process.env.IGDB_ACCESS_TOKEN || 'q4hi62k3igoelslpmuka0vw2uwz8gv';
-const igdbUrl = 'https://api.igdb.com/v4/games';
+// Конфигурация RAWG
+const rawgKey = process.env.RAWG_API_KEY || 'your_rawg_key_here';
+const rawgUrl = 'https://api.rawg.io/api/games';
 const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
-let igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/plain', 'Accept': 'application/json' };
 let steamApps = null;
 // Функция для получения steamApps
 async function getSteamApps() {
-  if (!steamApps) return steamApps;
+  if (steamApps) return steamApps;
   try {
     const response = await axios.get(steamUrl, { timeout: 5000 });
     steamApps = response.data.applist.apps;
@@ -39,38 +36,6 @@ async function getSteamApps() {
     return [];
   }
 }
-// Функция для обновления accessToken
-async function refreshAccessToken() {
-  try {
-    const response = await axios.post('https://id.twitch.tv/oauth2/token', null, {
-      params: {
-        client_id: clientId,
-        client_secret: clientSecret,
-        grant_type: 'client_credentials',
-      },
-      timeout: 5000,
-    });
-    accessToken = response.data.access_token;
-    igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
-    console.log('Access token refreshed:', accessToken.slice(0, 10) + '...', 'Expires in:', response.data.expires_in);
-    return accessToken;
-  } catch (error) {
-    console.error('Failed to refresh access token:', error.message);
-    throw error;
-  }
-}
-// Периодическое обновление токена (ежедневно)
-cron.schedule('0 0 * * *', async () => {
-  console.log('Scheduled access token refresh...');
-  try {
-    await refreshAccessToken();
-  } catch (error) {
-    console.error('Scheduled token refresh failed:', error.message);
-  }
-}, {
-  scheduled: true,
-  timezone: 'Europe/Kiev',
-});
 // Middleware для проверки авторизации
 async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -114,25 +79,12 @@ function scheduleKeepAlive(publicUrl) {
 cron.schedule('*/10 * * * *', async () => {
   try {
     console.log('Running scheduled fetch of popular games...');
-    const response = await axios.post(igdbUrl, 'fields id, name, cover.url, aggregated_rating; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit 1;', {
-      headers: igdbHeaders,
-      timeout: 5000,
-    });
-    if (response.data.length > 0) {
-      console.log('Scheduled fetch of popular games completed:', response.data.length, 'items');
+    const response = await axios.get(`${rawgUrl}?key=${rawgKey}&ordering=-metacritic&page_size=1`, { timeout: 5000 });
+    if (response.data.results.length > 0) {
+      console.log('Scheduled fetch of popular games completed:', response.data.results.length, 'items');
     }
   } catch (error) {
-    if (error.response?.status === 401) {
-      console.log('401 error in scheduled fetch, refreshing token...');
-      await refreshAccessToken();
-      const retryResponse = await axios.post(igdbUrl, 'fields id, name, cover.url, aggregated_rating; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit 1;', {
-        headers: igdbHeaders,
-        timeout: 5000,
-      });
-      console.log('Retry fetch successful:', retryResponse.data.length, 'items');
-    } else {
-      console.error('Error during scheduled fetch of popular games:', error.message);
-    }
+    console.error('Error during scheduled fetch of popular games:', error.message);
   }
 }, {
   scheduled: true,
@@ -187,7 +139,7 @@ function updateHistory(gameIds) {
   historyCache.set(historyKey, history);
 }
 async function getSteamCover(gameName, platforms) {
-  if (!platforms.includes('Steam')) return null;
+  if (!platforms.includes('PC')) return null;
   const cacheKey = `steam_${gameName.toLowerCase()}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
@@ -200,19 +152,18 @@ async function getSteamCover(gameName, platforms) {
   }
   return null;
 }
-async function getGameCover(gameName, platforms, igdbCover) {
+async function getGameCover(gameName, platforms, rawgImage) {
   const steamCover = await getSteamCover(gameName, platforms);
-  return steamCover || (igdbCover !== 'N/A' ? igdbCover.replace('t_thumb', 't_cover_big') : igdbCover);
+  return steamCover || (rawgImage || 'N/A');
 }
 async function processShortGame(game) {
-  const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
-  const platforms = game.platforms ? game.platforms.map((p) => p.name) : [];
+  const platforms = game.platforms ? game.platforms.map((p) => p.platform.name) : [];
   return {
     id: game.id,
     name: game.name,
-    cover_image: await getGameCover(game.name, platforms, coverImage),
-    critic_rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : 'N/A',
-    release_year: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).getFullYear() : 'N/A',
+    cover_image: await getGameCover(game.name, platforms, game.background_image),
+    critic_rating: game.metacritic || 'N/A',
+    release_year: game.released ? new Date(game.released).getFullYear() : 'N/A',
     main_genre: game.genres?.[0]?.name || 'N/A',
     platforms,
   };
@@ -221,57 +172,23 @@ async function processGame(game) {
   const favoriteCounts = await loadFavoriteCounts();
   const statusCounts = await loadStatusCounts();
   const gameStatusCounts = statusCounts[game.id] || {};
-  const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
-  const platforms = game.platforms ? game.platforms.map((p) => p.name) : [];
+  const platforms = game.platforms ? game.platforms.map((p) => p.platform.name) : [];
   const genres = game.genres ? game.genres.map((g) => g.name) : [];
-  const summary = game.summary || 'N/A';
-  const similarGames = game.similar_games?.length
-    ? await Promise.all(
-        game.similar_games.slice(0, 3).map(async (s) => {
-          const similarCoverImage = s.cover ? `https:${s.cover.url}` : 'N/A';
-          const similarPlatforms = s.platforms ? s.platforms.map((p) => p.name) : [];
-          return {
-            id: s.id,
-            name: s.name,
-            cover_image: await getGameCover(s.name, similarPlatforms, similarCoverImage),
-            critic_rating: s.aggregated_rating ? Math.round(s.aggregated_rating) : 'N/A',
-            release_year: s.release_dates?.[0]?.date ? new Date(s.release_dates[0].date * 1000).getFullYear() : 'N/A',
-            main_genre: s.genres?.[0]?.name || 'N/A',
-            platforms: similarPlatforms,
-          };
-        })
-      )
-    : [];
+  const summary = game.description_raw || 'N/A';
+  const similarGames = []; // RAWG не предоставляет similar_games напрямую, можно добавить логику если нужно
   return {
     id: game.id,
     name: game.name,
     genres,
     platforms,
-    release_date: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).toISOString().split('T')[0] : 'N/A',
-    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : game.rating ? Math.round(game.rating) : 'N/A',
-    rating_type: game.aggregated_rating ? 'Critics' : game.rating ? 'Users' : 'N/A',
-    cover_image: await getGameCover(game.name, platforms, coverImage),
-    age_ratings: game.age_ratings
-      ? game.age_ratings.map((r) => {
-          const ratings = {
-            1: 'ESRB: EC',
-            2: 'ESRB: E',
-            3: 'ESRB: E10+',
-            4: 'ESRB: T',
-            5: 'ESRB: M',
-            6: 'ESRB: AO',
-            7: 'PEGI: 3',
-            8: 'PEGI: 7',
-            9: 'PEGI: 12',
-            10: 'PEGI: 16',
-            11: 'PEGI: 18',
-          };
-          return ratings[r.rating] || 'N/A';
-        })
-      : ['N/A'],
+    release_date: game.released || 'N/A',
+    rating: game.metacritic || game.rating || 'N/A',
+    rating_type: game.metacritic ? 'Critics' : game.rating ? 'Users' : 'N/A',
+    cover_image: await getGameCover(game.name, platforms, game.background_image),
+    age_ratings: game.esrb_rating ? [game.esrb_rating.name] : ['N/A'],
     summary,
-    developers: game.involved_companies ? game.involved_companies.map((c) => c.company.name) : ['N/A'],
-    videos: game.videos ? game.videos.map((v) => `https://www.youtube.com/watch?v=${v.video_id}`).slice(0, 3) : ['N/A'],
+    developers: game.developers ? game.developers.map((d) => d.name) : ['N/A'],
+    videos: ['N/A'], // RAWG не предоставляет videos напрямую
     similar_games: similarGames,
     favorite: favoriteCounts[game.id] || 0,
     playing: gameStatusCounts.playing || 0,
@@ -286,23 +203,10 @@ app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 app.get('/popular', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   try {
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit ${limit};`;
-    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-    const games = await Promise.all(response.data.map((game) => processShortGame(game)));
+    const response = await axios.get(`${rawgUrl}?key=${rawgKey}&ordering=-metacritic&page_size=${limit}`, { timeout: 5000 });
+    const games = await Promise.all(response.data.results.map((game) => processShortGame(game)));
     res.json(games);
   } catch (error) {
-    if (error.response?.status === 401) {
-      console.log('401 error in /popular, refreshing token...');
-      await refreshAccessToken();
-      try {
-        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-        const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
-        return res.json(games);
-      } catch (retryError) {
-        console.error('Retry error /popular:', retryError.message);
-        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
-      }
-    }
     console.error('Error /popular:', error.message);
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
@@ -312,24 +216,10 @@ app.get('/search', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   if (!query) return res.status(400).json({ error: 'Query required' });
   try {
-    const body = `fields id, name, cover.url; search "${query}"; limit ${limit};`;
-    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-    const games = await Promise.all(response.data.map((game) => processShortGame(game)));
+    const response = await axios.get(`${rawgUrl}?key=${rawgKey}&search=${query}&ordering=-metacritic&page_size=${limit}`, { timeout: 5000 });
+    const games = await Promise.all(response.data.results.map((game) => processShortGame(game)));
     res.json(games);
   } catch (error) {
-    if (error.response?.status === 401) {
-      console.log('401 error in /search, refreshing token...');
-      await refreshAccessToken();
-      try {
-            const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; search "${query}*"; where version_parent = null & category = 0 & aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
-        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-        const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
-        return res.json(games);
-      } catch (retryError) {
-        console.error('Retry error /search:', retryError.message);
-        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
-      }
-    }
     console.error('Error /search:', error.message);
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
@@ -338,47 +228,19 @@ app.get('/games', async (req, res) => {
   const limit = parseInt(req.query.limit) || 5;
   try {
     const page = parseInt(req.query.page) || 1;
-    const offset = (page - 1) * 50;
-    const history = historyCache.get(historyKey) || [];
-    const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
-    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-    const data = response.data;
+    const response = await axios.get(`${rawgUrl}?key=${rawgKey}&page=${page}&page_size=50`, { timeout: 5000 });
+    const data = response.data.results;
     if (!data?.length) {
-      historyCache.set(historyKey, []);
       return res.status(404).json({ error: 'No new games available' });
     }
-    const shuffledData = weightedShuffle(data, history);
+    const history = historyCache.get(historyKey) || [];
+    const filteredData = data.filter(game => !history.includes(game.id));
+    const shuffledData = weightedShuffle(filteredData.length ? filteredData : data, history);
     const selectedGames = shuffledData.slice(0, limit);
     updateHistory(selectedGames.map((g) => g.id));
     const games = await Promise.all(selectedGames.map((game) => processShortGame(game)));
     res.json(games);
   } catch (error) {
-    if (error.response?.status === 401) {
-      console.log('401 error in /games, refreshing token...');
-      await refreshAccessToken();
-      try {
-        const page = parseInt(req.query.page) || 1;
-        const offset = (page - 1) * 50;
-        const history = historyCache.get(historyKey) || [];
-        const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
-        const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
-        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-        const data = retryResponse.data;
-        if (!data?.length) {
-          historyCache.set(historyKey, []);
-          return res.status(404).json({ error: 'No new games available' });
-        }
-        const shuffledData = weightedShuffle(data, history);
-        const selectedGames = shuffledData.slice(0, limit);
-        updateHistory(selectedGames.map((g) => g.id));
-        const games = await Promise.all(selectedGames.map((game) => processShortGame(game)));
-        return res.json(games);
-      } catch (retryError) {
-        console.error('Retry error /games:', retryError.message);
-        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
-      }
-    }
     console.error('Error /games:', error.message);
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
@@ -386,27 +248,11 @@ app.get('/games', async (req, res) => {
 app.get('/games/:id', async (req, res) => {
   try {
     const gameId = req.params.id;
-    const body = `fields id, name, genres.name, platforms.name, release_dates.date, aggregated_rating, rating, cover.url, age_ratings.rating, summary, involved_companies.company.name, videos.video_id, similar_games.id, similar_games.name, similar_games.cover.url, similar_games.aggregated_rating, similar_games.release_dates.date, similar_games.genres.name, similar_games.platforms.name; where id = ${gameId}; limit 1;`;
-    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-    if (!response.data?.length) return res.status(404).json({ error: 'Game not found' });
-    const game = await processGame(response.data[0]);
+    const response = await axios.get(`https://api.rawg.io/api/games/${gameId}?key=${rawgKey}`, { timeout: 5000 });
+    if (!response.data) return res.status(404).json({ error: 'Game not found' });
+    const game = await processGame(response.data);
     res.json(game);
   } catch (error) {
-    if (error.response?.status === 401) {
-      console.log('401 error in /games/:id, refreshing token...');
-      await refreshAccessToken();
-      try {
-        const gameId = req.params.id;
-        const body = `fields id, name, genres.name, platforms.name, release_dates.date, aggregated_rating, rating, cover.url, age_ratings.rating, summary, involved_companies.company.name, videos.video_id, similar_games.id, similar_games.name, similar_games.cover.url, similar_games.aggregated_rating, similar_games.release_dates.date, similar_games.genres.name, similar_games.platforms.name; where id = ${gameId}; limit 1;`;
-        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-        if (!retryResponse.data?.length) return res.status(404).json({ error: 'Game not found' });
-        const game = await processGame(retryResponse.data[0]);
-        return res.json(game);
-      } catch (retryError) {
-        console.error('Retry error /games/:id:', retryError.message);
-        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
-      }
-    }
     console.error('Error /games/:id:', error.message);
     res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
   }
@@ -511,7 +357,6 @@ const server = app.listen(port, async () => {
   const publicUrl = process.env.PUBLIC_URL || `https://gameapi-7i62.onrender.com`;
   console.log('Using public URL for keep-alive:', publicUrl);
   try {
-    await refreshAccessToken(); // Обновляем токен при старте сервера
     await getSteamApps(); // Загружаем Steam app list при старте
     scheduleKeepAlive(publicUrl);
   } catch (error) {
