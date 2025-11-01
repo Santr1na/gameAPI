@@ -29,7 +29,7 @@ let igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToke
 let steamApps = null;
 // Функция для получения steamApps
 async function getSteamApps() {
-  if (!steamApps) return steamApps;
+  if (steamApps) return steamApps;
   try {
     const response = await axios.get(steamUrl, { timeout: 5000 });
     steamApps = response.data.applist.apps;
@@ -51,7 +51,7 @@ async function refreshAccessToken() {
       timeout: 5000,
     });
     accessToken = response.data.access_token;
-    igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}` };
+    igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/plain', 'Accept': 'application/json' };
     console.log('Access token refreshed:', accessToken.slice(0, 10) + '...', 'Expires in:', response.data.expires_in);
     return accessToken;
   } catch (error) {
@@ -211,106 +211,108 @@ async function processShortGame(game) {
     id: game.id,
     name: game.name,
     cover_image: await getGameCover(game.name, platforms, coverImage),
-    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : (game.rating ? Math.round(game.rating) : 'N/A'),
-    description: game.summary || 'N/A'
+    critic_rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : 'N/A',
+    release_year: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).getFullYear() : 'N/A',
+    main_genre: game.genres?.[0]?.name || 'N/A',
+    platforms,
   };
 }
 async function processGame(game) {
-  const favoriteCounts = await loadFavoriteCounts();
-  const statusCounts = await loadStatusCounts();
-  const gameStatusCounts = statusCounts[game.id] || {};
-  const coverImage = game.cover ? https:${game.cover.url} : 'N/A';
-  const platforms = game.platforms ? game.platforms.map((p) => p.name) : [];
-  const genres = game.genres ? game.genres.map((g) => g.name) : [];
-  const summary = game.summary || 'N/A';
-  const similarGames = game.similar_games?.length
-    ? await Promise.all(
-        game.similar_games.slice(0, 3).map(async (s) => {
-          const similarCoverImage = s.cover ? https:${s.cover.url} : 'N/A';
-          const similarPlatforms = s.platforms ? s.platforms.map((p) => p.name) : [];
-          return {
-            id: s.id,
-            name: s.name,
-            cover_image: await getGameCover(s.name, similarPlatforms, similarCoverImage),
-            critic_rating: s.aggregated_rating ? Math.round(s.aggregated_rating) : 'N/A',
-            release_year: s.release_dates?.[0]?.date ? new Date(s.release_dates[0].date * 1000).getFullYear() : 'N/A',
-            main_genre: s.genres?.[0]?.name || 'N/A',
-            platforms: similarPlatforms,
-          };
-        })
-      )
-    : [];
-  return {
-    id: game.id,
-    name: game.name,
-    genres,
-    platforms,
-    release_date: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).toISOString().split('T')[0] : 'N/A',
-    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : game.rating ? Math.round(game.rating) : 'N/A',
-    rating_type: game.aggregated_rating ? 'Critics' : game.rating ? 'Users' : 'N/A',
-    cover_image: await getGameCover(game.name, platforms, coverImage),
-    age_ratings: game.age_ratings
-      ? game.age_ratings.map((r) => {
-          const ratings = {
-            1: 'ESRB: EC',
-            2: 'ESRB: E',
-            3: 'ESRB: E10+',
-            4: 'ESRB: T',
-            5: 'ESRB: M',
-            6: 'ESRB: AO',
-            7: 'PEGI: 3',
-            8: 'PEGI: 7',
-            9: 'PEGI: 12',
-            10: 'PEGI: 16',
-            11: 'PEGI: 18',
-          };
-          return ratings[r.rating] || 'N/A';
-        })
-      : ['N/A'],
-    summary,
-    developers: game.involved_companies ? game.involved_companies.map((c) => c.company.name) : ['N/A'],
-    videos: game.videos ? game.videos.map((v) => https://www.youtube.com/watch?v=${v.video_id}).slice(0, 3) : ['N/A'],
-    similar_games: similarGames,
-    favorite: favoriteCounts[game.id] || 0,
-    playing: gameStatusCounts.playing || 0,
-    ill_play: gameStatusCounts.ill_play || 0,
-    passed: gameStatusCounts.passed || 0,
-    postponed: gameStatusCounts.postponed || 0,
-    abandoned: gameStatusCounts.abandoned || 0,
-  };
+  const favoriteCounts = await loadFavoriteCounts();
+  const statusCounts = await loadStatusCounts();
+  const gameStatusCounts = statusCounts[game.id] || {};
+  const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
+  const platforms = game.platforms ? game.platforms.map((p) => p.name) : [];
+  const genres = game.genres ? game.genres.map((g) => g.name) : [];
+  const summary = game.summary || 'N/A';
+  const similarGames = game.similar_games?.length
+    ? await Promise.all(
+        game.similar_games.slice(0, 3).map(async (s) => {
+          const similarCoverImage = s.cover ? `https:${s.cover.url}` : 'N/A';
+          const similarPlatforms = s.platforms ? s.platforms.map((p) => p.name) : [];
+          return {
+            id: s.id,
+            name: s.name,
+            cover_image: await getGameCover(s.name, similarPlatforms, similarCoverImage),
+            critic_rating: s.aggregated_rating ? Math.round(s.aggregated_rating) : 'N/A',
+            release_year: s.release_dates?.[0]?.date ? new Date(s.release_dates[0].date * 1000).getFullYear() : 'N/A',
+            main_genre: s.genres?.[0]?.name || 'N/A',
+            platforms: similarPlatforms,
+          };
+        })
+      )
+    : [];
+  return {
+    id: game.id,
+    name: game.name,
+    genres,
+    platforms,
+    release_date: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).toISOString().split('T')[0] : 'N/A',
+    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : game.rating ? Math.round(game.rating) : 'N/A',
+    rating_type: game.aggregated_rating ? 'Critics' : game.rating ? 'Users' : 'N/A',
+    cover_image: await getGameCover(game.name, platforms, coverImage),
+    age_ratings: game.age_ratings
+      ? game.age_ratings.map((r) => {
+          const ratings = {
+            1: 'ESRB: EC',
+            2: 'ESRB: E',
+            3: 'ESRB: E10+',
+            4: 'ESRB: T',
+            5: 'ESRB: M',
+            6: 'ESRB: AO',
+            7: 'PEGI: 3',
+            8: 'PEGI: 7',
+            9: 'PEGI: 12',
+            10: 'PEGI: 16',
+            11: 'PEGI: 18',
+          };
+          return ratings[r.rating] || 'N/A';
+        })
+      : ['N/A'],
+    summary,
+    developers: game.involved_companies ? game.involved_companies.map((c) => c.company.name) : ['N/A'],
+    videos: game.videos ? game.videos.map((v) => `https://www.youtube.com/watch?v=${v.video_id}`).slice(0, 3) : ['N/A'],
+    similar_games: similarGames,
+    favorite: favoriteCounts[game.id] || 0,
+    playing: gameStatusCounts.playing || 0,
+    ill_play: gameStatusCounts.ill_play || 0,
+    passed: gameStatusCounts.passed || 0,
+    postponed: gameStatusCounts.postponed || 0,
+    abandoned: gameStatusCounts.abandoned || 0,
+  };
 }
 // Эндпоинты
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 app.get('/popular', async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  try {
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit ${limit};`;
-    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-    const games = await Promise.all(response.data.map((game) => processShortGame(game)));
-    res.json(games);
-  } catch (error) {
-    if (error.response?.status === 401) {
-      console.log('401 error in /popular, refreshing token...');
-      await refreshAccessToken();
-      try {
-        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-        const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
-        return res.json(games);
-      } catch (retryError) {
-        console.error('Retry error /popular:', retryError.message);
-        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
-      }
-    }
-    console.error('Error /popular:', error.message);
-    res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
-  }
+  const limit = parseInt(req.query.limit) || 10;
+  try {
+    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit ${limit};`;
+    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
+    const games = await Promise.all(response.data.map((game) => processShortGame(game)));
+    res.json(games);
+  } catch (error) {
+    if (error.response?.status === 401) {
+      console.log('401 error in /popular, refreshing token...');
+      await refreshAccessToken();
+      try {
+        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
+        const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
+        return res.json(games);
+      } catch (retryError) {
+        console.error('Retry error /popular:', retryError.message);
+        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
+      }
+    }
+    console.error('Error /popular:', error.message);
+    res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
+  }
 });
 app.get('/search', async (req, res) => {
   const query = req.query.query;
   const limit = parseInt(req.query.limit) || 10;
   if (!query) return res.status(400).json({ error: 'Query required' });
   try {
-    const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; search "${query}"; limit ${limit};`;
+    const body = `fields id, name, cover.url, aggregated_rating; search "${query}"; sort aggregated_rating desc; limit ${limit}; where aggregated_rating > 0;`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const games = await Promise.all(response.data.map((game) => processShortGame(game)));
     res.json(games);
@@ -319,7 +321,7 @@ app.get('/search', async (req, res) => {
       console.log('401 error in /search, refreshing token...');
       await refreshAccessToken();
       try {
-        const body = `fields id, name, cover.url, aggregated_rating, rating, release_dates.date, genres.name, platforms.name, summary; search "${query}*"; where version_parent = null & category = 0 & aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
+        const body = `fields id, name, cover.url, aggregated_rating; search "${query}"; sort aggregated_rating desc; limit ${limit}; where aggregated_rating > 0;`;
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
         const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
         return res.json(games);
@@ -459,7 +461,7 @@ app.post('/games/:id/status/:status', authenticate, async (req, res) => {
     await saveStatusCounts(statusCounts);
     res.json({ [status]: gameStatusCounts[status] });
   } catch (error) {
-    console.error(`Error /games/:id/status/${status} (POST): ${error.message}`);
+    console.error(`Error /games/:id/status/${status} (POST):`, error.message);
     res.status(500).json({ error: `Failed to increment ${status} count: ${error.message}` });
   }
 });
@@ -477,7 +479,7 @@ app.delete('/games/:id/status/:status', authenticate, async (req, res) => {
     await saveStatusCounts(statusCounts);
     res.json({ [status]: gameStatusCounts[status] });
   } catch (error) {
-    console.error(`Error /games/:id/status/${status} (DELETE): ${error.message}`);
+    console.error(`Error /games/:id/status/${status} (DELETE):`, error.message);
     res.status(500).json({ error: `Failed to decrement ${status} count: ${error.message}` });
   }
 });
@@ -493,14 +495,14 @@ app.delete('/games/:id/status', authenticate, async (req, res) => {
     await saveStatusCounts(statusCounts);
     res.json({ message: 'All statuses reset to 0' });
   } catch (error) {
-    console.error(`Error /games/:id/status (DELETE): ${error.message}`);
+    console.error(`Error /games/:id/status (DELETE):`, error.message);
     res.status(500).json({ error: 'Failed to reset statuses: ' + error.message });
   }
 });
 // Грациозное завершение
 process.on('SIGTERM', () => {
   server.close(() => {
-    console.log(`Server terminated at ${new Date().toISOString()}`);
+    console.log('Server terminated at', new Date().toISOString());
   });
 });
 // Запуск сервера
