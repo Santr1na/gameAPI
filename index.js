@@ -325,7 +325,7 @@ app.get('/search', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   if (!query) return res.status(400).json({ error: 'Query required' });
   try {
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; search "${query}"; where aggregated_rating > 0 & version_parent = null & category = 0; sort aggregated_rating desc; limit ${limit};`;
+    const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; search "${query}"; limit ${limit};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const games = await Promise.all(response.data.map((game) => processSearchGame(game)));
     res.json(games);
@@ -334,7 +334,7 @@ app.get('/search', async (req, res) => {
       console.log('401 error in /search, refreshing token...');
       await refreshAccessToken();
       try {
-        const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; search "${query}"; where aggregated_rating > 0 & version_parent = null & category = 0; sort aggregated_rating desc; limit ${limit};`;
+        const body = `fields id, name, cover.url, aggregated_rating, rating, release_dates.date, genres.name, platforms.name, summary; search "${query}*"; where version_parent = null & category = 0 & aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
         const games = await Promise.all(retryResponse.data.map((game) => processSearchGame(game)));
         return res.json(games);
