@@ -284,7 +284,7 @@ app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 app.get('/popular', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   try {
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit ${limit}`;
+    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit ${limit};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const games = await Promise.all(response.data.map((game) => processShortGame(game)));
     res.json(games);
