@@ -282,28 +282,28 @@ async function processGame(game) {
 // Эндпоинты
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 app.get('/popular', async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  try {
-    const body = `fields id, name, cover.url, aggregated_rating, rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit ${limit};`;
-    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-    const games = await Promise.all(response.data.map((game) => processShortGame(game)));
-    res.json(games);
-  } catch (error) {
-    if (error.response?.status === 401) {
-      console.log('401 error in /popular, refreshing token...');
-      await refreshAccessToken();
-      try {
-        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-        const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
-        return res.json(games);
-      } catch (retryError) {
-        console.error('Retry error /popular:', retryError.message);
-        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
-      }
-    }
-    console.error('Error /popular:', error.message);
-    res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
-  }
+  const limit = parseInt(req.query.limit) || 10;
+  try {
+    const body = fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit ${limit};;
+    const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
+    const games = await Promise.all(response.data.map((game) => processShortGame(game)));
+    res.json(games);
+  } catch (error) {
+    if (error.response?.status === 401) {
+      console.log('401 error in /popular, refreshing token...');
+      await refreshAccessToken();
+      try {
+        const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
+        const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
+        return res.json(games);
+      } catch (retryError) {
+        console.error('Retry error /popular:', retryError.message);
+        return res.status(500).json({ error: 'Data fetch error after token refresh: ' + retryError.message });
+      }
+    }
+    console.error('Error /popular:', error.message);
+    res.status(500).json({ error: 'Data fetch error: ' + (error.response?.status || error.message) });
+  }
 });
 app.get('/search', async (req, res) => {
   const query = req.query.query;
