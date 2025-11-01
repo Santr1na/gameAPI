@@ -216,68 +216,68 @@ async function processShortGame(game) {
   };
 }
 async function processGame(game) {
-  const favoriteCounts = await loadFavoriteCounts();
-  const statusCounts = await loadStatusCounts();
-  const gameStatusCounts = statusCounts[game.id] || {};
-  const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
-  const platforms = game.platforms ? game.platforms.map((p) => p.name) : [];
-  const genres = game.genres ? game.genres.map((g) => g.name) : [];
-  const summary = game.summary || 'N/A';
-  const similarGames = game.similar_games?.length
-    ? await Promise.all(
-        game.similar_games.slice(0, 3).map(async (s) => {
-          const similarCoverImage = s.cover ? `https:${s.cover.url}` : 'N/A';
-          const similarPlatforms = s.platforms ? s.platforms.map((p) => p.name) : [];
-          return {
-            id: s.id,
-            name: s.name,
-            cover_image: await getGameCover(s.name, similarPlatforms, similarCoverImage),
-            critic_rating: s.aggregated_rating ? Math.round(s.aggregated_rating) : 'N/A',
-            release_year: s.release_dates?.[0]?.date ? new Date(s.release_dates[0].date * 1000).getFullYear() : 'N/A',
-            main_genre: s.genres?.[0]?.name || 'N/A',
-            platforms: similarPlatforms,
-          };
-        })
-      )
-    : [];
-  return {
-    id: game.id,
-    name: game.name,
-    genres,
-    platforms,
-    release_date: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).toISOString().split('T')[0] : 'N/A',
-    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : game.rating ? Math.round(game.rating) : 'N/A',
-    rating_type: game.aggregated_rating ? 'Critics' : game.rating ? 'Users' : 'N/A',
-    cover_image: await getGameCover(game.name, platforms, coverImage),
-    age_ratings: game.age_ratings
-      ? game.age_ratings.map((r) => {
-          const ratings = {
-            1: 'ESRB: EC',
-            2: 'ESRB: E',
-            3: 'ESRB: E10+',
-            4: 'ESRB: T',
-            5: 'ESRB: M',
-            6: 'ESRB: AO',
-            7: 'PEGI: 3',
-            8: 'PEGI: 7',
-            9: 'PEGI: 12',
-            10: 'PEGI: 16',
-            11: 'PEGI: 18',
-          };
-          return ratings[r.rating] || 'N/A';
-        })
-      : ['N/A'],
-    summary,
-    developers: game.involved_companies ? game.involved_companies.map((c) => c.company.name) : ['N/A'],
-    videos: game.videos ? game.videos.map((v) => `https://www.youtube.com/watch?v=${v.video_id}`).slice(0, 3) : ['N/A'],
-    similar_games: similarGames,
-    favorite: favoriteCounts[game.id] || 0,
-    playing: gameStatusCounts.playing || 0,
-    ill_play: gameStatusCounts.ill_play || 0,
-    passed: gameStatusCounts.passed || 0,
-    postponed: gameStatusCounts.postponed || 0,
-    abandoned: gameStatusCounts.abandoned || 0,
-  };
+  const favoriteCounts = await loadFavoriteCounts();
+  const statusCounts = await loadStatusCounts();
+  const gameStatusCounts = statusCounts[game.id] || {};
+  const coverImage = game.cover ? https:${game.cover.url} : 'N/A';
+  const platforms = game.platforms ? game.platforms.map((p) => p.name) : [];
+  const genres = game.genres ? game.genres.map((g) => g.name) : [];
+  const summary = game.summary || 'N/A';
+  const similarGames = game.similar_games?.length
+    ? await Promise.all(
+        game.similar_games.slice(0, 3).map(async (s) => {
+          const similarCoverImage = s.cover ? https:${s.cover.url} : 'N/A';
+          const similarPlatforms = s.platforms ? s.platforms.map((p) => p.name) : [];
+          return {
+            id: s.id,
+            name: s.name,
+            cover_image: await getGameCover(s.name, similarPlatforms, similarCoverImage),
+            critic_rating: s.aggregated_rating ? Math.round(s.aggregated_rating) : 'N/A',
+            release_year: s.release_dates?.[0]?.date ? new Date(s.release_dates[0].date * 1000).getFullYear() : 'N/A',
+            main_genre: s.genres?.[0]?.name || 'N/A',
+            platforms: similarPlatforms,
+          };
+        })
+      )
+    : [];
+  return {
+    id: game.id,
+    name: game.name,
+    genres,
+    platforms,
+    release_date: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).toISOString().split('T')[0] : 'N/A',
+    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : game.rating ? Math.round(game.rating) : 'N/A',
+    rating_type: game.aggregated_rating ? 'Critics' : game.rating ? 'Users' : 'N/A',
+    cover_image: await getGameCover(game.name, platforms, coverImage),
+    age_ratings: game.age_ratings
+      ? game.age_ratings.map((r) => {
+          const ratings = {
+            1: 'ESRB: EC',
+            2: 'ESRB: E',
+            3: 'ESRB: E10+',
+            4: 'ESRB: T',
+            5: 'ESRB: M',
+            6: 'ESRB: AO',
+            7: 'PEGI: 3',
+            8: 'PEGI: 7',
+            9: 'PEGI: 12',
+            10: 'PEGI: 16',
+            11: 'PEGI: 18',
+          };
+          return ratings[r.rating] || 'N/A';
+        })
+      : ['N/A'],
+    summary,
+    developers: game.involved_companies ? game.involved_companies.map((c) => c.company.name) : ['N/A'],
+    videos: game.videos ? game.videos.map((v) => https://www.youtube.com/watch?v=${v.video_id}).slice(0, 3) : ['N/A'],
+    similar_games: similarGames,
+    favorite: favoriteCounts[game.id] || 0,
+    playing: gameStatusCounts.playing || 0,
+    ill_play: gameStatusCounts.ill_play || 0,
+    passed: gameStatusCounts.passed || 0,
+    postponed: gameStatusCounts.postponed || 0,
+    abandoned: gameStatusCounts.abandoned || 0,
+  };
 }
 // Эндпоинты
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
