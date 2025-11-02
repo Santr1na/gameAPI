@@ -222,7 +222,7 @@ async function processPopularGame(game) {
     id: game.id,
     name: game.name,
     cover_image: await getGameCover(game.name, platforms, coverImage),
-    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : (game.rating ? Math.round(game.rating) : 'N/A'),
+    critic_rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : (game.rating ? Math.round(game.rating) : 'N/A'),
     release_year: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).getFullYear() : 'N/A',
     main_genre: game.genres?.[0]?.name || 'N/A',
     platforms
