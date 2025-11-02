@@ -204,7 +204,7 @@ async function getGameCover(gameName, platforms, igdbCover) {
   const steamCover = await getSteamCover(gameName, platforms);
   return steamCover || (igdbCover !== 'N/A' ? igdbCover.replace('t_thumb', 't_cover_big') : igdbCover);
 }
-async function processShortGame(game) {
+async function processSearchGame(game) {
   const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
   const platforms = game.platforms ? game.platforms.map((p) => p.name) : [];
   return {
@@ -213,6 +213,19 @@ async function processShortGame(game) {
     cover_image: await getGameCover(game.name, platforms, coverImage),
     rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : (game.rating ? Math.round(game.rating) : 'N/A'),
     description: game.summary || 'N/A'
+  };
+}
+async function processPopularGame(game) {
+  const coverImage = game.cover ? `https:${game.cover.url}` : 'N/A';
+  const platforms = game.platforms ? game.platforms.map((p) => p.name) : [];
+  return {
+    id: game.id,
+    name: game.name,
+    cover_image: await getGameCover(game.name, platforms, coverImage),
+    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : (game.rating ? Math.round(game.rating) : 'N/A'),
+    release_year: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).getFullYear() : 'N/A',
+    main_genre: game.genres?.[0]?.name || 'N/A',
+    platforms
   };
 }
 async function processGame(game) {
@@ -284,9 +297,9 @@ app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 app.get('/popular', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   try {
-    const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit};`;
+    const body = `fields id, name, cover.url, aggregated_rating, rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-    const games = await Promise.all(response.data.map((game) => processShortGame(game)));
+    const games = await Promise.all(response.data.map((game) => processPopularGame(game)));
     res.json(games);
   } catch (error) {
     if (error.response?.status === 401) {
@@ -294,7 +307,7 @@ app.get('/popular', async (req, res) => {
       await refreshAccessToken();
       try {
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-        const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
+        const games = await Promise.all(retryResponse.data.map((game) => processPopularGame(game)));
         return res.json(games);
       } catch (retryError) {
         console.error('Retry error /popular:', retryError.message);
@@ -312,16 +325,16 @@ app.get('/search', async (req, res) => {
   try {
     const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; search "${query}"; limit ${limit};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-    const games = await Promise.all(response.data.map((game) => processShortGame(game)));
+    const games = await Promise.all(response.data.map((game) => processSearchGame(game)));
     res.json(games);
   } catch (error) {
     if (error.response?.status === 401) {
       console.log('401 error in /search, refreshing token...');
       await refreshAccessToken();
       try {
-        const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; search "${query}*"; where version_parent = null & category = 0 & aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
+        const body = `fields id, name, cover.url, aggregated_rating, rating, release_dates.date, genres.name, platforms.name, summary; search "${query}*"; where version_parent = null & category = 0 & aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
-        const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
+        const games = await Promise.all(retryResponse.data.map((game) => processSearchGame(game)));
         return res.json(games);
       } catch (retryError) {
         console.error('Retry error /search:', retryError.message);
@@ -339,7 +352,7 @@ app.get('/games', async (req, res) => {
     const offset = (page - 1) * 50;
     const history = historyCache.get(historyKey) || [];
     const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
-    const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
+    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const data = response.data;
     if (!data?.length) {
@@ -349,7 +362,7 @@ app.get('/games', async (req, res) => {
     const shuffledData = weightedShuffle(data, history);
     const selectedGames = shuffledData.slice(0, limit);
     updateHistory(selectedGames.map((g) => g.id));
-    const games = await Promise.all(selectedGames.map((game) => processShortGame(game)));
+    const games = await Promise.all(selectedGames.map((game) => processPopularGame(game)));
     res.json(games);
   } catch (error) {
     if (error.response?.status === 401) {
@@ -360,7 +373,7 @@ app.get('/games', async (req, res) => {
         const offset = (page - 1) * 50;
         const history = historyCache.get(historyKey) || [];
         const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
-        const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
+        const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
         const data = retryResponse.data;
         if (!data?.length) {
@@ -370,7 +383,7 @@ app.get('/games', async (req, res) => {
         const shuffledData = weightedShuffle(data, history);
         const selectedGames = shuffledData.slice(0, limit);
         updateHistory(selectedGames.map((g) => g.id));
-        const games = await Promise.all(selectedGames.map((game) => processShortGame(game)));
+        const games = await Promise.all(selectedGames.map((game) => processPopularGame(game)));
         return res.json(games);
       } catch (retryError) {
         console.error('Retry error /games:', retryError.message);
@@ -459,7 +472,7 @@ app.post('/games/:id/status/:status', authenticate, async (req, res) => {
     await saveStatusCounts(statusCounts);
     res.json({ [status]: gameStatusCounts[status] });
   } catch (error) {
-    console.error(`Error /games/:id/status/${status} (POST): ${error.message}`);
+    console.error(`Error /games/:id/status/${status} (POST):`, error.message);
     res.status(500).json({ error: `Failed to increment ${status} count: ${error.message}` });
   }
 });
@@ -477,7 +490,7 @@ app.delete('/games/:id/status/:status', authenticate, async (req, res) => {
     await saveStatusCounts(statusCounts);
     res.json({ [status]: gameStatusCounts[status] });
   } catch (error) {
-    console.error(`Error /games/:id/status/${status} (DELETE): ${error.message}`);
+    console.error(`Error /games/:id/status/${status} (DELETE):`, error.message);
     res.status(500).json({ error: `Failed to decrement ${status} count: ${error.message}` });
   }
 });
@@ -493,7 +506,7 @@ app.delete('/games/:id/status', authenticate, async (req, res) => {
     await saveStatusCounts(statusCounts);
     res.json({ message: 'All statuses reset to 0' });
   } catch (error) {
-    console.error(`Error /games/:id/status (DELETE): ${error.message}`);
+    console.error(`Error /games/:id/status (DELETE):`, error.message);
     res.status(500).json({ error: 'Failed to reset statuses: ' + error.message });
   }
 });
