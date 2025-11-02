@@ -211,10 +211,8 @@ async function processShortGame(game) {
     id: game.id,
     name: game.name,
     cover_image: await getGameCover(game.name, platforms, coverImage),
-    critic_rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : 'N/A',
-    release_year: game.release_dates?.[0]?.date ? new Date(game.release_dates[0].date * 1000).getFullYear() : 'N/A',
-    main_genre: game.genres?.[0]?.name || 'N/A',
-    platforms,
+    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : (game.rating ? Math.round(game.rating) : 'N/A'),
+    description: game.summary || 'N/A'
   };
 }
 async function processGame(game) {
@@ -286,7 +284,7 @@ app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 app.get('/popular', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   try {
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit};`;
+    const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const games = await Promise.all(response.data.map((game) => processShortGame(game)));
     res.json(games);
@@ -312,7 +310,7 @@ app.get('/search', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   if (!query) return res.status(400).json({ error: 'Query required' });
   try {
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; search "${query}"; where version_parent = null & category = 0 & aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
+    const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; search "${query}"; limit ${limit};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const games = await Promise.all(response.data.map((game) => processShortGame(game)));
     res.json(games);
@@ -321,7 +319,7 @@ app.get('/search', async (req, res) => {
       console.log('401 error in /search, refreshing token...');
       await refreshAccessToken();
       try {
-        const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; search "${query}"; where version_parent = null & category = 0 & aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
+        const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; search "${query}*"; where version_parent = null & category = 0 & aggregated_rating > 0; sort aggregated_rating desc; limit ${limit};`;
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
         const games = await Promise.all(retryResponse.data.map((game) => processShortGame(game)));
         return res.json(games);
@@ -341,7 +339,7 @@ app.get('/games', async (req, res) => {
     const offset = (page - 1) * 50;
     const history = historyCache.get(historyKey) || [];
     const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
-    const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
+    const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
     const response = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
     const data = response.data;
     if (!data?.length) {
@@ -362,7 +360,7 @@ app.get('/games', async (req, res) => {
         const offset = (page - 1) * 50;
         const history = historyCache.get(historyKey) || [];
         const excludeIds = history.length > 0 ? `where id != (${history.join(',')});` : '';
-        const body = `fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
+        const body = `fields id, name, cover.url, aggregated_rating, rating, summary, platforms.name; ${excludeIds} limit 50; offset ${offset};`;
         const retryResponse = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 5000 });
         const data = retryResponse.data;
         if (!data?.length) {
@@ -461,7 +459,7 @@ app.post('/games/:id/status/:status', authenticate, async (req, res) => {
     await saveStatusCounts(statusCounts);
     res.json({ [status]: gameStatusCounts[status] });
   } catch (error) {
-    console.error(`Error /games/:id/status/${status} (POST):`, error.message);
+    console.error(`Error /games/:id/status/${status} (POST): ${error.message}`);
     res.status(500).json({ error: `Failed to increment ${status} count: ${error.message}` });
   }
 });
@@ -479,7 +477,7 @@ app.delete('/games/:id/status/:status', authenticate, async (req, res) => {
     await saveStatusCounts(statusCounts);
     res.json({ [status]: gameStatusCounts[status] });
   } catch (error) {
-    console.error(`Error /games/:id/status/${status} (DELETE):`, error.message);
+    console.error(`Error /games/:id/status/${status} (DELETE): ${error.message}`);
     res.status(500).json({ error: `Failed to decrement ${status} count: ${error.message}` });
   }
 });
@@ -495,14 +493,14 @@ app.delete('/games/:id/status', authenticate, async (req, res) => {
     await saveStatusCounts(statusCounts);
     res.json({ message: 'All statuses reset to 0' });
   } catch (error) {
-    console.error(`Error /games/:id/status (DELETE):`, error.message);
+    console.error(`Error /games/:id/status (DELETE): ${error.message}`);
     res.status(500).json({ error: 'Failed to reset statuses: ' + error.message });
   }
 });
 // Грациозное завершение
 process.on('SIGTERM', () => {
   server.close(() => {
-    console.log('Server terminated at', new Date().toISOString());
+    console.log(`Server terminated at ${new Date().toISOString()}`);
   });
 });
 // Запуск сервера
