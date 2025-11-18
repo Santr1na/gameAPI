@@ -5,7 +5,7 @@ const NodeCache = require('node-cache');
 const cron = require('node-cron');
 const admin = require('firebase-admin');
 const app = express();
-const port = process.env.PORT || 3002;
+const PORT = process.env.PORT || 3002;
 // Инициализация Firebase Admin SDK
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 admin.initializeApp({
@@ -517,18 +517,13 @@ process.on('SIGTERM', () => {
   });
 });
 // Запуск сервера
-const server = app.listen(port, async () => {
-  console.log(`Server running on port ${port} at ${new Date().toISOString()}`);
-  const publicUrl = process.env.PUBLIC_URL || `https://gameapi-7i62.onrender.com`;
-  console.log('Using public URL for keep-alive:', publicUrl);
+const server = app.listen(PORT, async () => {
+  console.log(`Server running on port ${PORT}`);
   try {
-    await refreshAccessToken(); // Обновляем токен при старте сервера
-    await getSteamApps(); // Загружаем Steam app list при старте
-    scheduleKeepAlive(publicUrl);
+    await refreshAccessToken();
+    await getSteamApps();
   } catch (error) {
     console.error('Initial setup failed:', error.message);
   }
-}).on('error', (err) => {
-  console.error('Server failed to start:', err.message);
 });
 module.exports = app;
