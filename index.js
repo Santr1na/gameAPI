@@ -5,8 +5,7 @@ const NodeCache = require('node-cache');
 const cron = require('node-cron');
 const admin = require('firebase-admin');
 const app = express();
-app.listen(3002);
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3002;
 // Инициализация Firebase Admin SDK
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 admin.initializeApp({
