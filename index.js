@@ -219,7 +219,7 @@ app.get('/games/:id', async (req, res) => {
   }
 });
 
-// Favorites & statuses (с логами)
+// Favorites & statuses
 app.get('/games/:id/favorite', authenticate, async (req, res) => {
   try {
     const counts = await loadFavoriteCounts();
@@ -286,17 +286,14 @@ app.delete('/games/:id/status/:status', authenticate, async (req, res) => {
 });
 
 // Start
-(async () => {
+const server = app.listen(PORT, async () => {
+  console.log(`Сервер запущен на порту ${PORT}`);
   try {
     await refreshAccessToken();
     await getSteamApps();
-    app.listen(PORT, () => {
-      console.log(`Сервер запущен на порту ${PORT}`);
-    });
   } catch (e) {
-    console.error('Startup failed:', e);
-    process.exit(1);
+    console.error('Startup ERROR:', e);
   }
-})();
+});
 
 module.exports = app;
