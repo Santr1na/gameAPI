@@ -2,7 +2,6 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const NodeCache = require('node-cache');
-const cron = require('node-cron');
 const admin = require('firebase-admin');
 
 const app = express();
@@ -39,7 +38,7 @@ async function getSteamApps() {
     steamApps = res.data.applist.apps;
     return steamApps;
   } catch (err) {
-    console.error('Steam fetch error:', err.message, err.stack, err.response?.data);
+    console.error('Steam fetch error:', err.message);
     return [];
   }
 }
@@ -56,7 +55,7 @@ async function refreshAccessToken() {
     console.log('Token refreshed');
     return accessToken;
   } catch (err) {
-    console.error('Token refresh ERROR:', err.message, err.stack, err.response?.data);
+    console.error('Token refresh ERROR:', err.response?.data || err.message);
     throw err;
   }
 }
@@ -69,7 +68,7 @@ async function authenticate(req, res, next) {
     req.user = await admin.auth().verifyIdToken(header.split('Bearer ')[1]);
     next();
   } catch (err) {
-    console.error('Auth ERROR:', err.message, err.stack);
+    console.error('Auth ERROR:', err.message);
     return res.status(403).json({ error: 'Invalid token' });
   }
 }
@@ -151,6 +150,7 @@ async function processGame(g) {
 app.get('/health', (req, res) => res.json({ status: 'OK' }));
 
 app.get('/popular', async (req, res) => {
+  console.log('/popular requested');
   const limit = parseInt(req.query.limit) || 10;
   const body = `fields id,name,cover.url,aggregated_rating,rating,release_dates.date,genres.name,platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit};`;
   try {
@@ -158,13 +158,14 @@ app.get('/popular', async (req, res) => {
     const games = await Promise.all(r.data.map(processPopularGame));
     res.json(games);
   } catch (err) {
-    console.error('/popular ERROR:', err.message, err.stack, JSON.stringify(err.response?.data));
+    console.error('/popular ERROR:', err.message, err.response?.status, err.response?.data);
     if (err.response?.status === 401) await refreshAccessToken();
-    res.status(500).json({ error: 'IGDB error', details: err.response?.data });
+    res.status(500).json({ error: 'IGDB error' });
   }
 });
 
 app.get('/search', async (req, res) => {
+  console.log('/search requested');
   const q = req.query.query;
   const limit = parseInt(req.query.limit) || 10;
   if (!q) return res.status(400).json({ error: 'Query required' });
@@ -174,13 +175,14 @@ app.get('/search', async (req, res) => {
     const games = await Promise.all(r.data.map(processSearchGame));
     res.json(games);
   } catch (err) {
-    console.error('/search ERROR:', err.message, err.stack, JSON.stringify(err.response?.data));
+    console.error('/search ERROR:', err.message, err.response?.status, err.response?.data);
     if (err.response?.status === 401) await refreshAccessToken();
-    res.status(500).json({ error: 'IGDB error', details: err.response?.data });
+    res.status(500).json({ error: 'IGDB error' });
   }
 });
 
 app.get('/games', async (req, res) => {
+  console.log('/games requested');
   const limit = parseInt(req.query.limit) || 5;
   const page = parseInt(req.query.page) || 1;
   const offset = (page - 1) * 50;
@@ -196,13 +198,14 @@ app.get('/games', async (req, res) => {
     const games = await Promise.all(selected.map(processPopularGame));
     res.json(games);
   } catch (err) {
-    console.error('/games ERROR:', err.message, err.stack, JSON.stringify(err.response?.data));
+    console.error('/games ERROR:', err.message, err.response?.status, err.response?.data);
     if (err.response?.status === 401) await refreshAccessToken();
-    res.status(500).json({ error: 'IGDB error', details: err.response?.data });
+    res.status(500).json({ error: 'IGDB error' });
   }
 });
 
 app.get('/games/:id', async (req, res) => {
+  console.log('/games/:id requested', req.params.id);
   const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.rating,summary,involved_companies.company.name,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name; where id = ${req.params.id}; limit 1;`;
   try {
     const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
@@ -210,19 +213,19 @@ app.get('/games/:id', async (req, res) => {
     const game = await processGame(r.data[0]);
     res.json(game);
   } catch (err) {
-    console.error('/games/:id ERROR:', err.message, err.stack, JSON.stringify(err.response?.data));
+    console.error('/games/:id ERROR:', err.message, err.response?.status, err.response?.data);
     if (err.response?.status === 401) await refreshAccessToken();
-    res.status(500).json({ error: 'IGDB error', details: err.response?.data });
+    res.status(500).json({ error: 'IGDB error' });
   }
 });
 
-// Favorite routes (с authenticate)
+// Favorites & statuses (с логами)
 app.get('/games/:id/favorite', authenticate, async (req, res) => {
   try {
     const counts = await loadFavoriteCounts();
     res.json({ favorite: counts[req.params.id] || 0 });
   } catch (err) {
-    console.error('/favorite GET ERROR:', err.message, err.stack);
+    console.error('/favorite GET ERROR:', err.message);
     res.status(500).json({ error: 'Firestore error' });
   }
 });
@@ -234,7 +237,7 @@ app.post('/games/:id/favorite', authenticate, async (req, res) => {
     await saveFavoriteCounts(counts);
     res.json({ favorite: counts[req.params.id] });
   } catch (err) {
-    console.error('/favorite POST ERROR:', err.message, err.stack);
+    console.error('/favorite POST ERROR:', err.message);
     res.status(500).json({ error: 'Firestore error' });
   }
 });
@@ -246,12 +249,11 @@ app.delete('/games/:id/favorite', authenticate, async (req, res) => {
     await saveFavoriteCounts(counts);
     res.json({ favorite: counts[req.params.id] });
   } catch (err) {
-    console.error('/favorite DELETE ERROR:', err.message, err.stack);
+    console.error('/favorite DELETE ERROR:', err.message);
     res.status(500).json({ error: 'Firestore error' });
   }
 });
 
-// Status routes
 const validStatuses = ['playing', 'ill_play', 'passed', 'postponed', 'abandoned'];
 app.post('/games/:id/status/:status', authenticate, async (req, res) => {
   const status = req.params.status.toLowerCase();
@@ -263,7 +265,7 @@ app.post('/games/:id/status/:status', authenticate, async (req, res) => {
     await saveStatusCounts(counts);
     res.json({ [status]: counts[req.params.id][status] });
   } catch (err) {
-    console.error('/status POST ERROR:', err.message, err.stack);
+    console.error('/status POST ERROR:', err.message);
     res.status(500).json({ error: 'Firestore error' });
   }
 });
@@ -278,22 +280,23 @@ app.delete('/games/:id/status/:status', authenticate, async (req, res) => {
     await saveStatusCounts(counts);
     res.json({ [status]: counts[req.params.id][status] });
   } catch (err) {
-    console.error('/status DELETE ERROR:', err.message, err.stack);
+    console.error('/status DELETE ERROR:', err.message);
     res.status(500).json({ error: 'Firestore error' });
   }
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`Сервер запущен на порту ${PORT}`);
-});
-
-server.on('listening', async () => {
+// Start
+(async () => {
   try {
     await refreshAccessToken();
     await getSteamApps();
+    app.listen(PORT, () => {
+      console.log(`Сервер запущен на порту ${PORT}`);
+    });
   } catch (e) {
-    console.error('Startup ERROR:', e);
+    console.error('Startup failed:', e);
+    process.exit(1);
   }
-});
+})();
 
 module.exports = app;
