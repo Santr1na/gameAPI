@@ -283,14 +283,16 @@ app.delete('/games/:id/status/:status', authenticate, async (req, res) => {
   }
 });
 
-// Start
-app.listen(PORT, async () => {
-  console.log(`Server on port ${PORT}`);
+const server = app.listen(PORT, () => {
+  console.log(`Сервер запущен на порту ${PORT}`);
+});
+
+server.on('listening', async () => {
   try {
     await refreshAccessToken();
     await getSteamApps();
   } catch (e) {
-    console.error('Startup ERROR:', e.message, e.stack);
+    console.error('Startup ERROR:', e);
   }
 });
 
