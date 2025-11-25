@@ -34,7 +34,7 @@ const historyKey = 'recent_games';
 
 // IGDB
 const clientId = process.env.IGDB_CLIENT_ID || '6suowimw8bemqf3u9gurh7qnpx74sd';
-const clientSecret = process.env.IGDB_CLIENT_SECRET || '1257quvt9ary0s7bicrwcsx117lxgn';
+const clientSecret = process.env.IGDB_CLIENT_SECRET || 'powongmt2u3r0jb136tfqhq0r8t5gb';
 let accessToken = '';
 const igdbUrl = 'https://api.igdb.com/v4/games';
 const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
