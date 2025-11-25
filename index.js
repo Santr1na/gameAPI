@@ -20,7 +20,6 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
 // Middleware
