@@ -257,13 +257,13 @@ if (g.age_ratings && g.age_ratings.length > 0) {
       return ['PEGI: 12'];
     })(),
     summary: g.summary || 'N/A',
-  developers: g.involved_companies && g.involved_companies.length > 0
-    ? g.involved_companies
-        .filter(c => c.developer || c.publisher)  // ← теперь и разработчик, и издатель
-        .map(c => c.company?.name)
-        .filter(Boolean)
-        .slice(0, 3)  // на всякий случай, если много
-    : [], // fallback для Zelda и других
+    developers: g.involved_companies && g.involved_companies.length > 0
+      ? g.involved_companies
+          .filter(c => c.developer || c.publisher)
+          .map(c => c.company?.name)
+          .filter(Boolean)
+          .slice(0, 3)
+      : [],
     similar_games: similar,
     favorite: favs[g.id] || 0,
     playing: st.playing || 0,
@@ -336,7 +336,7 @@ app.get('/games/:id', async (req, res) => {
   const id = req.params.id;
   if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'Invalid ID' });
 
-  const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.*,summary,involved_companies.company.*,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name; where id = ${id}; limit 1;`;
+  const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.*,summary,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name;where id = ${id}; limit 1;`;
   try {
     const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
     if (!r.data.length) return res.status(404).json({ error: 'Game not found' });
