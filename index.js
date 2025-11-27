@@ -258,7 +258,16 @@ app.get('/games', async (req, res) => {
 
 app.get('/games/:id', async (req, res) => {
   console.log('/games/:id requested', req.params.id);
-  const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.rating,summary,involved_companies.company.name,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name; where id = ${req.params.id}; limit 1;`;
+  const body = `fields 
+  id,name,genres.name,platforms.name,release_dates.date,
+  aggregated_rating,rating,cover.url,
+  age_ratings.category,age_ratings.rating,  // ← ДОБАВИЛ .category
+  summary,involved_companies.company.name,
+  videos.video_id,
+  similar_games.id,similar_games.name,similar_games.cover.url,
+  similar_games.aggregated_rating,similar_games.release_dates.date,
+  similar_games.genres.name,similar_games.platforms.name; 
+  where id = ${req.params.id}; limit 1;`;
   try {
     const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
     if (!r.data.length) return res.status(404).json({ error: 'Game not found' });
