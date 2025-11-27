@@ -135,24 +135,66 @@ async function processGame(g) {
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
   const genres = g.genres ? g.genres.map(gg => gg.name) : [];
-  const similar = g.similar_games?.length ? await Promise.all(g.similar_games.slice(0, 3).map(async s => {
-    const sc = s.cover ? `https:${s.cover.url}` : 'N/A';
-    const sp = s.platforms ? s.platforms.map(p => p.name) : [];
-    return { id: s.id, name: s.name, cover_image: await getGameCover(s.name, sp, sc), critic_rating: Math.round(s.aggregated_rating || 0) || 'N/A', release_year: s.release_dates?.[0]?.date ? new Date(s.release_dates[0].date * 1000).getFullYear() : 'N/A', main_genre: s.genres?.[0]?.name || 'N/A', platforms: sp };
-  })) : [];
+
+  // УЛУЧШЕННАЯ обработка age_ratings
+// Замени только этот блок в processGame:
+let ageRatings = ['Pending']; // или 'N/A', как хочешь
+if (g.age_ratings && g.age_ratings.length > 0) {
+  const pegi = g.age_ratings.find(r => r.category === 2 && r.rating); // 2 = PEGI
+  if (pegi) {
+    const pegiMap = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
+    ageRatings = [`PEGI: ${pegiMap[pegi.rating] || '??'}`];
+  }
+}
+
+  const similar = g.similar_games?.length
+    ? await Promise.all(
+        g.similar_games.slice(0, 3).map(async s => {
+          const sc = s.cover ? `https:${s.cover.url}` : 'N/A';
+          const sp = s.platforms ? s.platforms.map(p => p.name) : [];
+          return {
+            id: s.id,
+            name: s.name,
+            cover_image: await getGameCover(s.name, sp, sc),
+            critic_rating: Math.round(s.aggregated_rating || 0) || 'N/A',
+            release_year: s.release_dates?.[0]?.date
+              ? new Date(s.release_dates[0].date * 1000).getFullYear()
+              : 'N/A',
+            main_genre: s.genres?.[0]?.name || 'N/A',
+            platforms: sp
+          };
+        })
+      )
+    : [];
+
   return {
-    id: g.id, name: g.name, genres, platforms: plats,
-    release_date: g.release_dates?.[0]?.date ? new Date(g.release_dates[0].date * 1000).toISOString().split('T')[0] : 'N/A',
+    id: g.id,
+    name: g.name,
+    genres,
+    platforms: plats,
+    release_date: g.release_dates?.[0]?.date
+      ? new Date(g.release_dates[0].date * 1000).toISOString().split('T')[0]
+      : 'N/A',
     rating: Math.round(g.aggregated_rating || g.rating || 0) || 'N/A',
     rating_type: g.aggregated_rating ? 'Critics' : 'Users',
     cover_image: await getGameCover(g.name, plats, cover),
-    age_ratings: g.age_ratings ? g.age_ratings.map(r => ({1:'ESRB: EC',2:'ESRB: E',3:'ESRB: E10+',4:'ESRB: T',5:'ESRB: M',6:'ESRB: AO',7:'PEGI: 3',8:'PEGI: 7',9:'PEGI: 12',10:'PEGI: 16',11:'PEGI: 18'}[r.rating] || 'N/A')) : ['N/A'],
+    age_ratings: ageRatings, // Теперь правильно показывает ESRB/PEGI
     summary: g.summary || 'N/A',
-    developers: g.involved_companies ? g.involved_companies.map(c => c.company.name) : ['N/A'],
-    videos: g.videos ? g.videos.map(v => `https://www.youtube.com/watch?v=${v.video_id}`).slice(0,3) : ['N/A'],
+    developers: g.involved_companies
+      ? g.involved_companies
+          .filter(c => c.developer)
+          .map(c => c.company.name)
+      : ['N/A'],
+    videos: g.videos
+      ? g.videos.map(v => `https://www.youtube.com/watch?v=${v.video_id}`).slice(0, 3)
+      : [],
     similar_games: similar,
     favorite: favs[g.id] || 0,
-    playing: st.playing || 0, ill_play: st.ill_play || 0, passed: st.passed || 0, postponed: st.postponed || 0, abandoned: st.abandoned || 0
+    playing: st.playing || 0,
+    ill_play: st.ill_play || 0,
+    passed: st.passed || 0,
+    postponed: st.postponed || 0,
+    abandoned: st.abandoned || 0
   };
 }
 
