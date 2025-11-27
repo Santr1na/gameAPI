@@ -8,20 +8,22 @@ const app = express();
 const PORT = process.env.PORT || 3002;
 
 // Firebase
-let serviceAccount;
-try {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-} catch (err) {
-  console.log('ENV broken, using local key');
-  serviceAccount = require('./serviceAccountKey.json');
-}
-
+// Firebase — РАБОЧИЙ ВАРИАНТ ДЛЯ ПРОДАКШЕНА
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
+  try {
+    // Попытка взять из переменной окружения (Render, Vercel, Railway и т.д.)
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+    console.log('Firebase: подключено через ENV');
+  } catch (err) {
+    console.error('FIREBASE ENV ERROR — ключ не найден или битый');
+    // Резерв: Application Default Credentials (для Render, GCP, etc.)
+    admin.initializeApp();
+    console.log('Firebase: использую ADC (авто-авторизация)');
+  }
 }
-
 const db = admin.firestore();
 
 // Middleware
