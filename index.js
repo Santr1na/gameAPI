@@ -138,15 +138,21 @@ async function processGame(g) {
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
   const genres = g.genres ? g.genres.map(gg => gg.name) : [];
 
-  // УЛУЧШЕННАЯ обработка age_ratings
-// Замени только этот блок в processGame:
-let ageRatings = ['Pending']; // или 'N/A', как хочешь
+
+const PEGI_RATING_MAP = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
+const PEGI_ORG_ID = 2;
+
+let ageRatings = ['Pending'];
+
 if (g.age_ratings && g.age_ratings.length > 0) {
-  const pegi = g.age_ratings.find(r => r.category === 2 && r.rating); // 2 = PEGI
+  const pegi = g.age_ratings.find(r => r.organization === PEGI_ORG_ID && r.rating_category);
   if (pegi) {
-    const pegiMap = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
-    ageRatings = [`PEGI: ${pegiMap[pegi.rating] || '??'}`];
+    ageRatings = [`PEGI: ${PEGI_RATING_MAP[pegi.rating_category] || '??'}`];
   }
+} else {
+  // Fallback по ID (расширь по мере надобности)
+  const FALLBACK = { 7346: '12', 1942: '18', 19560: '18', 11156: '16', 250: '18', 287: '18' };
+  if (FALLBACK[g.id]) ageRatings = [`PEGI: ${FALLBACK[g.id]}`];
 }
 
   const similar = g.similar_games?.length
@@ -262,8 +268,7 @@ app.get('/games/:id', async (req, res) => {
   const id = req.params.id;
   if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'Invalid ID' });
 
-  const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.category,age_ratings.rating,summary,involved_companies.company.name,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name; where id = ${id}; limit 1;`;
-
+  const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.organization,age_ratings.rating_category,age_ratings.rating_cover_url,summary,involved_companies.company.name,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name; where id = ${id}; limit 1;`;
   try {
     const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
     if (!r.data.length) return res.status(404).json({ error: 'Game not found' });
