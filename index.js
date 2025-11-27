@@ -9,21 +9,23 @@ const PORT = process.env.PORT || 3002;
 
 // Firebase
 // Firebase — РАБОЧИЙ ВАРИАНТ ДЛЯ ПРОДАКШЕНА
+// Firebase — РАБОЧИЙ ВАРИАНТ ДЛЯ ЛЮБОГО ХОСТИНГА
 if (!admin.apps.length) {
   try {
-    // Попытка взять из переменной окружения (Render, Vercel, Railway и т.д.)
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    const serviceAccount = JSON.parse(
+      process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n')
+    );
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
-    console.log('Firebase: подключено через ENV');
+    console.log('Firebase: подключено через ENV (ручной парсинг)');
   } catch (err) {
-    console.error('FIREBASE ENV ERROR — ключ не найден или битый');
-    // Резерв: Application Default Credentials (для Render, GCP, etc.)
-    admin.initializeApp();
-    console.log('Firebase: использую ADC (авто-авторизация)');
+    console.log('ENV не сработал, пробуем ADC...');
+    admin.initializeApp(); // Автоматом берёт из окружения хостинга
+    console.log('Firebase: подключено через ADC');
   }
 }
+
 const db = admin.firestore();
 
 // Middleware
