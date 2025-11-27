@@ -257,15 +257,13 @@ if (g.age_ratings && g.age_ratings.length > 0) {
       return ['PEGI: 12'];
     })(),
     summary: g.summary || 'N/A',
-  developers: g.involved_companies
+  developers: g.involved_companies && g.involved_companies.length > 0
     ? g.involved_companies
-        .filter(c => c.developer)
-        .map(c => c.company?.name || 'Unknown')
+        .filter(c => c.developer || c.publisher)  // ← теперь и разработчик, и издатель
+        .map(c => c.company?.name)
         .filter(Boolean)
-    : ['Unknown'],
-    videos: g.videos
-      ? g.videos.map(v => `https://www.youtube.com/watch?v=${v.video_id}`).slice(0, 3)
-      : [],
+        .slice(0, 3)  // на всякий случай, если много
+    : [], // fallback для Zelda и других
     similar_games: similar,
     favorite: favs[g.id] || 0,
     playing: st.playing || 0,
