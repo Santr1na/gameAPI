@@ -208,18 +208,53 @@ if (g.age_ratings && g.age_ratings.length > 0) {
     rating_type: g.aggregated_rating ? 'Critics' : 'Users',
     cover_image: await getGameCover(g.name, plats, cover),
     age_ratings: (() => {
-      if (!g.age_ratings || g.age_ratings.length === 0) {
-        // Fallback для известных игр
-        const fallback = { 7346: '12', 1942: '18', 19560: '18', 11156: '16', 250: '18', 242408: '18' };
-        return fallback[g.id] ? [`PEGI: ${fallback[g.id]}`] : ['PEGI: 12'];
+      const HARD_FALLBACK = {
+        242408: '18', // Counter-Strike 2
+        7346:   '12', // Zelda: Breath of the Wild
+        1942:   '18', // Witcher 3
+        19560:  '18', // God of War
+        11156:  '16', // Horizon Zero Dawn
+        250:    '18', // GTA V
+        287:    '18'  // RDR2
+      };
+    
+      // 1. Жёсткий fallback — всегда приоритет
+      if (HARD_FALLBACK[g.id]) {
+        return [`PEGI: ${HARD_FALLBACK[g.id]}`];
       }
     
-      const pegi = g.age_ratings.find(r => r.organization === 2);
-      if (!pegi) return ['PEGI: 12']; // Если нет PEGI — безопасный дефолт
+      // 2. Попытка взять из API (даже если криво заполнено)
+      if (g.age_ratings && g.age_ratings.length > 0) {
+        const pegi = g.age_ratings.find(r => r.organization === 2);
+        if (pegi) {
+          // rating_category — новый формат (7-11)
+          if (pegi.rating_category && [7,8,9,10,11].includes(pegi.rating_category)) {
+            const map = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
+            return [`PEGI: ${map[pegi.rating_category]}`];
+          }
+          // rating — старый формат (иногда всё ещё приходит)
+          if (pegi.rating && [7,8,9,10,11].includes(pegi.rating)) {
+            const map = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
+            return [`PEGI: ${map[pegi.rating]}`];
+          }
+        }
+      }
     
-      const map = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
-      const rating = map[pegi.rating_category] || map[pegi.rating] || '??';
-      return [`PEGI: ${rating}`];
+      // 3. Умный fallback по названию
+      const name = g.name.toLowerCase();
+      if (name.includes('counter-strike') || name.includes('cs2') || name.includes('cs:go')) {
+        return ['PEGI: 18'];
+      }
+    
+      // 4. По жанру
+      if (g.genres?.some(g => ['Shooter', 'Horror', 'Action'].includes(g.name))) {
+        return ['PEGI: 18'];
+      }
+    
+      if (name.includes('minecraft') || name.includes('lego')) return ['PEGI: 7'];
+      if (name.includes('fifa') || name.includes('nba') || name.includes('pes')) return ['PEGI: 3'];
+    
+      return ['PEGI: 12'];
     })(),
     summary: g.summary || 'N/A',
     developers: g.involved_companies
