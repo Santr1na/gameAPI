@@ -12,13 +12,15 @@ let serviceAccount;
 try {
   serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 } catch (err) {
-  // если env сломан — берём файл (работает везде без проблем с \n)
+  console.log('ENV broken, using local key');
   serviceAccount = require('./serviceAccountKey.json');
 }
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+}
 
 const db = admin.firestore();
 
@@ -255,27 +257,21 @@ app.get('/games', async (req, res) => {
     res.status(500).json({ error: 'IGDB error' });
   }
 });
-
+// 1. Фикс IGDB-запроса — УБРАТЬ ВСЕ ПЕРЕНОСЫ!
 app.get('/games/:id', async (req, res) => {
-  console.log('/games/:id requested', req.params.id);
-  const body = `fields 
-  id,name,genres.name,platforms.name,release_dates.date,
-  aggregated_rating,rating,cover.url,
-  age_ratings.category,age_ratings.rating,  // ← ДОБАВИЛ .category
-  summary,involved_companies.company.name,
-  videos.video_id,
-  similar_games.id,similar_games.name,similar_games.cover.url,
-  similar_games.aggregated_rating,similar_games.release_dates.date,
-  similar_games.genres.name,similar_games.platforms.name; 
-  where id = ${req.params.id}; limit 1;`;
+  const id = req.params.id;
+  if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'Invalid ID' });
+
+  const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.category,age_ratings.rating,summary,involved_companies.company.name,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name; where id = ${id}; limit 1;`;
+
   try {
     const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
     if (!r.data.length) return res.status(404).json({ error: 'Game not found' });
     const game = await processGame(r.data[0]);
     res.json(game);
   } catch (err) {
-    console.error('/games/:id ERROR:', err.message, err.response?.status, err.response?.data);
     if (err.response?.status === 401) await refreshAccessToken();
+    console.error('/games/:id ERROR:', err.response?.data || err.message);
     res.status(500).json({ error: 'IGDB error' });
   }
 });
