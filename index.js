@@ -141,6 +141,11 @@ async function processGame(g) {
 
 const PEGI_RATING_MAP = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
 const PEGI_ORG_ID = 2;
+// В processGame, обнови FALLBACK и умный fallback:
+const FALLBACK = { 
+  7346: '12', 1942: '18', 19560: '18', 11156: '16', 250: '18', 287: '18',
+  242408: '18'  // Counter-Strike 2
+};
 
 let ageRatings = ['Pending'];
 
@@ -149,10 +154,22 @@ if (g.age_ratings && g.age_ratings.length > 0) {
   if (pegi) {
     ageRatings = [`PEGI: ${PEGI_RATING_MAP[pegi.rating_category] || '??'}`];
   }
+} else if (FALLBACK[g.id]) {
+  ageRatings = [`PEGI: ${FALLBACK[g.id]}`];
 } else {
-  // Fallback по ID (расширь по мере надобности)
-  const FALLBACK = { 7346: '12', 1942: '18', 19560: '18', 11156: '16', 250: '18', 287: '18' };
-  if (FALLBACK[g.id]) ageRatings = [`PEGI: ${FALLBACK[g.id]}`];
+  // Умный fallback
+  const name = g.name.toLowerCase();
+  if (name.includes("counter-strike") || name.includes("call of duty") || name.includes("battlefield")) {
+    ageRatings = ["PEGI: 18"];
+  } else if (g.genres?.some(genre => ["Shooter", "Horror"].includes(genre.name))) {
+    ageRatings = ["PEGI: 18"];
+  } else if (name.includes("minecraft") || name.includes("lego")) {
+    ageRatings = ["PEGI: 7"];
+  } else if (name.includes("fifa") || name.includes("nba")) {
+    ageRatings = ["PEGI: 3"];
+  } else {
+    ageRatings = ["PEGI: 12"];
+  }
 }
 
   const similar = g.similar_games?.length
