@@ -257,11 +257,12 @@ if (g.age_ratings && g.age_ratings.length > 0) {
       return ['PEGI: 12'];
     })(),
     summary: g.summary || 'N/A',
-    developers: g.involved_companies
-      ? g.involved_companies
-          .filter(c => c.developer)
-          .map(c => c.company.name)
-      : ['N/A'],
+  developers: g.involved_companies
+    ? g.involved_companies
+        .filter(c => c.developer)
+        .map(c => c.company?.name || 'Unknown')
+        .filter(Boolean)
+    : ['Unknown'],
     videos: g.videos
       ? g.videos.map(v => `https://www.youtube.com/watch?v=${v.video_id}`).slice(0, 3)
       : [],
