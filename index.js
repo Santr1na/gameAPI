@@ -127,7 +127,7 @@ async function getGameCover(name, plats, igdb) {
 async function processSearchGame(g) {
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
-  return { id: g.id, name: g.name, cover_image: await getGameCover(g.name, plats, cover), rating: Math.round(g.aggregated_rating || g.rating || 0) || 'N/A', description: g.summary || 'N/A' };
+  return { id: g.id, name: g.name, cover_image: await getGameCover(g.name, plats, cover), rating: Math.round(g.aggregated_rating || g.rating || 0) || 'N/A', description: g.summary || 'N/A' , platforms: plats , release_year: g.release_dates?.[0]?.date ? new Date(g.release_dates[0].date * 1000).getFullYear() : 'N/A' , main_genre: g.genres?.[0]?.name || 'N/A'};
 }
 async function processPopularGame(g) {
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
@@ -297,7 +297,7 @@ app.get('/search', async (req, res) => {
   const q = req.query.query;
   const limit = parseInt(req.query.limit) || 10;
   if (!q) return res.status(400).json({ error: 'Query required' });
-  const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name; search "${q}"; limit ${limit};`;
+  const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${q}"; limit ${limit};`;
   try {
     const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
     const games = await Promise.all(r.data.map(processSearchGame));
