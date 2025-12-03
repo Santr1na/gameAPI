@@ -11,6 +11,11 @@ const PORT = process.env.PORT || 3002;
 // Firebase — РАБОЧИЙ ВАРИАНТ ДЛЯ ПРОДАКШЕНА
 // Firebase — РАБОЧИЙ ВАРИАНТ ДЛЯ ЛЮБОГО ХОСТИНГА
 if (!admin.apps.length) {
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+    console.error('ОШИБКА: Нет FIREBASE_SERVICE_ACCOUNT в .env');
+    process.exit(1);
+  }
+
   try {
     const serviceAccount = JSON.parse(
       process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n')
@@ -18,11 +23,10 @@ if (!admin.apps.length) {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
-    console.log('Firebase: подключено через ENV (ручной парсинг)');
+    console.log('Firebase Admin подключён через service account (VPS)');
   } catch (err) {
-    console.log('ENV не сработал, пробуем ADC...');
-    admin.initializeApp(); // Автоматом берёт из окружения хостинга
-    console.log('Firebase: подключено через ADC');
+    console.error('Не удалось инициализировать Firebase:', err.message);
+    process.exit(1);
   }
 }
 
