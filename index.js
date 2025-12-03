@@ -78,14 +78,17 @@ async function refreshAccessToken() {
 
 // Auth
 async function authenticate(req, res, next) {
-  const header = req.headers.authorization;
-  if (!header?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
+  const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'No token' });
+  }
+  const token = authHeader.split('Bearer ')[1];
   try {
-    req.user = await admin.auth().verifyIdToken(header.split('Bearer ')[1]);
+    req.user = await admin.auth().verifyIdToken(token);
     next();
   } catch (err) {
     console.error('Auth ERROR:', err.message);
-    return res.status(403).json({ error: 'Invalid token' });
+    return res.status(401).json({ error: 'Invalid token' });
   }
 }
 
