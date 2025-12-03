@@ -356,16 +356,26 @@ app.get('/games/:id', async (req, res) => {
   }
 });
 
-// Favorites & statuses
-app.get('/games/:id/favorite', authenticate, async (req, res) => {
+// Изменение favorite числа через /games/:id
+app.patch('/games/:id', authenticate, async (req, res) => {
+  const gameId = req.params.id;
+  const { favoriteChange } = req.body; // число, может быть +1 или -1
+
+  if (!/^\d+$/.test(gameId)) return res.status(400).json({ error: 'Invalid ID' });
+  if (typeof favoriteChange !== 'number') return res.status(400).json({ error: 'favoriteChange must be a number' });
+
   try {
     const counts = await loadFavoriteCounts();
-    res.json({ favorite: counts[req.params.id] || 0 });
+    counts[gameId] = Math.max((counts[gameId] || 0) + favoriteChange, 0); // не меньше 0
+    await saveFavoriteCounts(counts);
+    res.json({ id: gameId, favorite: counts[gameId] });
   } catch (err) {
-    console.error('/favorite GET ERROR:', err.message);
+    console.error('/games/:id PATCH ERROR:', err.message);
     res.status(500).json({ error: 'Firestore error' });
   }
 });
+
+
 
 app.post('/games/:id/favorite', authenticate, async (req, res) => {
   try {
