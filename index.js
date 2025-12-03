@@ -19,9 +19,7 @@ if (!admin.apps.length) {
   }
 
   try {
-    const serviceAccount = JSON.parse(
-      process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n')
-    );
+    const serviceAccount = require("./serviceAccountKey.json");
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
