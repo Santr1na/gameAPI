@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const path = require('path');
 const NodeCache = require('node-cache');
 const admin = require('firebase-admin');
 
@@ -19,7 +20,7 @@ if (!admin.apps.length) {
   }
 
   try {
-    const serviceAccount = require("./serviceAccountKey.json");
+    const serviceAccount = require("/root/gameAPI/serviceAccountKey.json");
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
