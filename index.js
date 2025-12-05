@@ -141,46 +141,63 @@ async function processPopularGame(g) {
   return { id: g.id, name: g.name, cover_image: await getGameCover(g.name, plats, cover), critic_rating: Math.round(g.aggregated_rating || 0) || 'N/A', release_year: g.release_dates?.[0]?.date ? new Date(g.release_dates[0].date * 1000).getFullYear() : 'N/A', main_genre: g.genres?.[0]?.name || 'N/A', platforms: plats };
 }
 async function processGame(g) {
-  const favs = await loadFavoriteCounts();
-  const stats = await loadStatusCounts();
-  const st = stats[g.id] || {};
+  // === Читаем счётчик favorite ===
+  let favoriteCount = 0;
+  try {
+    const favSnap = await db.collection('counters').doc('favorites').get();
+    if (favSnap.exists) {
+      const data = favSnap.data();
+      favoriteCount = data[g.id] || 0;
+    }
+  } catch (err) {
+    console.error('Error loading favorite count for game', g.id, err);
+    favoriteCount = 0;
+  }
+
+  // === Читаем статусы (playing, ill_play и т.д.) ===
+  const statusCounts = { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
+  try {
+    const statusSnap = await db.collection('counters').doc('statuses').get();
+    if (statusSnap.exists) {
+      const gameStats = statusSnap.data()[g.id] || {};
+      Object.keys(statusCounts).forEach(key => {
+        statusCounts[key] = gameStats[key] || 0;
+      });
+    }
+  } catch (err) {
+    console.error('Error loading status counts for game', g.id, err);
+  }
+
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
   const genres = g.genres ? g.genres.map(gg => gg.name) : [];
 
+  const PEGI_RATING_MAP = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
+  const PEGI_ORG_ID = 2;
+  const FALLBACK = { 7346: '12', 1942: '18', 19560: '18', 11156: '16', 250: '18', 287: '18', 242408: '18' };
 
-const PEGI_RATING_MAP = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
-const PEGI_ORG_ID = 2;
-// В processGame, обнови FALLBACK и умный fallback:
-const FALLBACK = { 
-  7346: '12', 1942: '18', 19560: '18', 11156: '16', 250: '18', 287: '18',
-  242408: '18'  // Counter-Strike 2
-};
-
-let ageRatings = ['Pending'];
-
-if (g.age_ratings && g.age_ratings.length > 0) {
-  const pegi = g.age_ratings.find(r => r.organization === PEGI_ORG_ID && r.rating_category);
-  if (pegi) {
-    ageRatings = [`PEGI: ${PEGI_RATING_MAP[pegi.rating_category] || '??'}`];
-  }
-} else if (FALLBACK[g.id]) {
-  ageRatings = [`PEGI: ${FALLBACK[g.id]}`];
-} else {
-  // Умный fallback
-  const name = g.name.toLowerCase();
-  if (name.includes("counter-strike") || name.includes("call of duty") || name.includes("battlefield")) {
-    ageRatings = ["PEGI: 18"];
-  } else if (g.genres?.some(genre => ["Shooter", "Horror"].includes(genre.name))) {
-    ageRatings = ["PEGI: 18"];
-  } else if (name.includes("minecraft") || name.includes("lego")) {
-    ageRatings = ["PEGI: 7"];
-  } else if (name.includes("fifa") || name.includes("nba")) {
-    ageRatings = ["PEGI: 3"];
+  let ageRatings = ['Pending'];
+  if (g.age_ratings && g.age_ratings.length > 0) {
+    const pegi = g.age_ratings.find(r => r.organization === PEGI_ORG_ID && r.rating_category);
+    if (pegi) {
+      ageRatings = [`PEGI: ${PEGI_RATING_MAP[pegi.rating_category] || '??'}`];
+    }
+  } else if (FALLBACK[g.id]) {
+    ageRatings = [`PEGI: ${FALLBACK[g.id]}`];
   } else {
-    ageRatings = ["PEGI: 12"];
+    const name = g.name.toLowerCase();
+    if (name.includes("counter-strike") || name.includes("call of duty") || name.includes("battlefield")) {
+      ageRatings = ["PEGI: 18"];
+    } else if (g.genres?.some(genre => ["Shooter", "Horror"].includes(genre.name))) {
+      ageRatings = ["PEGI: 18"];
+    } else if (name.includes("minecraft") || name.includes("lego")) {
+      ageRatings = ["PEGI: 7"];
+    } else if (name.includes("fifa") || name.includes("nba")) {
+      ageRatings = ["PEGI: 3"];
+    } else {
+      ageRatings = ["PEGI: 12"];
+    }
   }
-}
 
   const similar = g.similar_games?.length
     ? await Promise.all(
@@ -215,51 +232,27 @@ if (g.age_ratings && g.age_ratings.length > 0) {
     cover_image: await getGameCover(g.name, plats, cover),
     age_ratings: (() => {
       const HARD_FALLBACK = {
-        242408: '18', // Counter-Strike 2
-        7346:   '12', // Zelda: Breath of the Wild
-        1942:   '18', // Witcher 3
-        19560:  '18', // God of War
-        11156:  '16', // Horizon Zero Dawn
-        250:    '18', // GTA V
-        287:    '18'  // RDR2
+        242408: '18', 7346: '12', 1942: '18', 19560: '18', 11156: '16', 250: '18', 287: '18'
       };
-    
-      // 1. Жёсткий fallback — всегда приоритет
-      if (HARD_FALLBACK[g.id]) {
-        return [`PEGI: ${HARD_FALLBACK[g.id]}`];
-      }
-    
-      // 2. Попытка взять из API (даже если криво заполнено)
+      if (HARD_FALLBACK[g.id]) return [`PEGI: ${HARD_FALLBACK[g.id]}`];
       if (g.age_ratings && g.age_ratings.length > 0) {
         const pegi = g.age_ratings.find(r => r.organization === 2);
         if (pegi) {
-          // rating_category — новый формат (7-11)
           if (pegi.rating_category && [7,8,9,10,11].includes(pegi.rating_category)) {
             const map = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
             return [`PEGI: ${map[pegi.rating_category]}`];
           }
-          // rating — старый формат (иногда всё ещё приходит)
           if (pegi.rating && [7,8,9,10,11].includes(pegi.rating)) {
             const map = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
             return [`PEGI: ${map[pegi.rating]}`];
           }
         }
       }
-    
-      // 3. Умный fallback по названию
       const name = g.name.toLowerCase();
-      if (name.includes('counter-strike') || name.includes('cs2') || name.includes('cs:go')) {
-        return ['PEGI: 18'];
-      }
-    
-      // 4. По жанру
-      if (g.genres?.some(g => ['Shooter', 'Horror', 'Action'].includes(g.name))) {
-        return ['PEGI: 18'];
-      }
-    
+      if (name.includes('counter-strike') || name.includes('cs2') || name.includes('cs:go')) return ['PEGI: 18'];
+      if (g.genres?.some(g => ['Shooter', 'Horror', 'Action'].includes(g.name))) return ['PEGI: 18'];
       if (name.includes('minecraft') || name.includes('lego')) return ['PEGI: 7'];
       if (name.includes('fifa') || name.includes('nba') || name.includes('pes')) return ['PEGI: 3'];
-    
       return ['PEGI: 12'];
     })(),
     summary: g.summary || 'N/A',
@@ -271,12 +264,12 @@ if (g.age_ratings && g.age_ratings.length > 0) {
           .slice(0, 3)
       : [],
     similar_games: similar,
-    favorite: favs[g.id] || 0,
-    playing: st.playing || 0,
-    ill_play: st.ill_play || 0,
-    passed: st.passed || 0,
-    postponed: st.postponed || 0,
-    abandoned: st.abandoned || 0
+    favorite: favoriteCount,
+    playing: statusCounts.playing,
+    ill_play: statusCounts.ill_play,
+    passed: statusCounts.passed,
+    postponed: statusCounts.postponed,
+    abandoned: statusCounts.abandoned
   };
 }
 
