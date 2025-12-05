@@ -98,8 +98,6 @@ async function authenticate(req, res, next) {
 }
 
 // Firestore helpers
-async function loadFavoriteCounts() { try { const doc = await db.collection('counters').doc('favorites').get(); return doc.exists ? doc.data() : {}; } catch (e) { console.error('Load fav ERROR:', e); return {}; } }
-async function saveFavoriteCounts(c) { try { await db.collection('counters').doc('favorites').set(c); } catch (e) { console.error('Save fav ERROR:', e); } }
 async function loadStatusCounts() { try { const doc = await db.collection('counters').doc('statuses').get(); return doc.exists ? doc.data() : {}; } catch (e) { console.error('Load status ERROR:', e); return {}; } }
 async function saveStatusCounts(c) { try { await db.collection('counters').doc('statuses').set(c); } catch (e) { console.error('Save status ERROR:', e); } }
 
@@ -362,24 +360,41 @@ app.patch('/games/:id', authenticate, async (req, res) => {
   const gameId = req.params.id;
   const { favoriteChange } = req.body;
 
-  if (!gameId || !/^\d+$/.test(gameId)) {
-    return res.status(400).json({ error: 'Invalid game ID' });
-  }
-  if (!Number.isInteger(favoriteChange) || Math.abs(favoriteChange) !== 1) {
-    return res.status(400).json({ error: 'favoriteChange must be 1 or -1' });
+  if (!/^\d+$/.test(gameId) || Math.abs(favoriteChange) !== 1) {
+    return res.status(400).json({ error: 'Invalid request' });
   }
 
   try {
-    const counts = await loadFavoriteCounts();
-    const current = counts[gameId] || 0;
-    const updated = Math.max(current + favoriteChange, 0);
-    counts[gameId] = updated;
-    await saveFavoriteCounts(counts);
+    const docRef = db.collection('counters').doc('favorites');
 
-    res.json({ favorite: updated });
+    // Используем atomic increment — это 100% надёжно
+    await docRef.update({
+      [gameId]: admin.firestore.FieldValue.increment(favoriteChange)
+    });
+
+    // Получаем актуальное значение
+    const snap = await docRef.get();
+    const data = snap.data() || {};
+    const currentCount = data[gameId] || 0;
+
+    // Гарантируем, что не уйдёт в минус
+    if (currentCount < 0) {
+      await docRef.update({ [gameId]: 0 });
+      res.json({ favorite: 0 });
+    } else {
+      res.json({ favorite: currentCount });
+    }
   } catch (err) {
-    console.error('PATCH favorite error:', err);
-    res.status(500).json({ error: 'Internal error' });
+    // Если документ не существует — создаём его
+    if (err.code === 5) { // NOT_FOUND
+      await db.collection('counters').doc('favorites').set({
+        [gameId]: favoriteChange > 0 ? 1 : 0
+      }, { merge: true });
+      res.json({ favorite: favoriteChange > 0 ? 1 : 0 });
+    } else {
+      console.error('PATCH favorite error:', err);
+      res.status(500).json({ error: 'Internal error' });
+    }
   }
 });
 
