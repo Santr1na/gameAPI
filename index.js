@@ -347,47 +347,31 @@ app.get('/games/:id', async (req, res) => {
     res.status(500).json({ error: 'IGDB error' });
   }
 });
-
 app.patch('/games/:id', authenticate, async (req, res) => {
   const gameId = req.params.id;
   const { favoriteChange } = req.body;
 
-  if (!/^\d+$/.test(gameId) || Math.abs(favoriteChange) !== 1) {
+  if (!gameId || !/^\d+$/.test(gameId) || Math.abs(favoriteChange) !== 1) {
     return res.status(400).json({ error: 'Invalid request' });
   }
 
   try {
     const docRef = db.collection('counters').doc('favorites');
 
-    // Атомарно увеличиваем/уменьшаем счётчик
-    await docRef.update({
+    // Атомарно меняем счётчик
+    await docRef.set({
       [gameId]: admin.firestore.FieldValue.increment(favoriteChange)
-    });
+    }, { merge: true });
 
-    // Читаем актуальное значение
+    // Читаем новое значение
     const snap = await docRef.get();
     const data = snap.data() || {};
-    let count = data[gameId] || 0;
-
-    // Защита от отрицательных значений
-    if (count < 0) {
-      await docRef.update({ [gameId]: 0 });
-      count = 0;
-    }
+    const count = Math.max(data[gameId] || 0, 0);
 
     res.json({ favorite: count });
   } catch (err) {
-    // Если документ не существует — создаём
-    if (err.code === 5) { // NOT_FOUND
-      const initial = favoriteChange > 0 ? 1 : 0;
-      await db.collection('counters').doc('favorites').set({
-        [gameId]: initial
-      }, { merge: true });
-      res.json({ favorite: initial });
-    } else {
-      console.error('PATCH favorite error:', err);
-      res.status(500).json({ error: 'Internal error' });
-    }
+    console.error('PATCH favorite error:', err);
+    res.status(500).json({ error: 'Failed to update favorite' });
   }
 });
 
