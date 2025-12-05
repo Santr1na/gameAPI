@@ -142,16 +142,14 @@ async function processPopularGame(g) {
 }
 async function processGame(g) {
   // === Читаем счётчик favorite ===
-  let favoriteCount = 0;
+let favoriteCount = 0;
   try {
-    const favSnap = await db.collection('counters').doc('favorites').get();
-    if (favSnap.exists) {
-      const data = favSnap.data();
-      favoriteCount = data[g.id] || 0;
+    const snap = await db.collection('counters').doc('favorites').get();
+    if (snap.exists) {
+      favoriteCount = snap.data()[g.id] || 0;
     }
   } catch (err) {
-    console.error('Error loading favorite count for game', g.id, err);
-    favoriteCount = 0;
+    console.error('Failed to load favorite for game', g.id);
   }
 
   // === Читаем статусы (playing, ill_play и т.д.) ===
@@ -264,7 +262,7 @@ async function processGame(g) {
           .slice(0, 3)
       : [],
     similar_games: similar,
-    favorite: favoriteCount,
+favorite: favoriteCount,
     playing: statusCounts.playing,
     ill_play: statusCounts.ill_play,
     passed: statusCounts.passed,
