@@ -355,7 +355,6 @@ app.get('/games/:id', async (req, res) => {
   }
 });
 
-// Изменение favorite числа через /games/:id
 app.patch('/games/:id', authenticate, async (req, res) => {
   const gameId = req.params.id;
   const { favoriteChange } = req.body;
@@ -367,30 +366,31 @@ app.patch('/games/:id', authenticate, async (req, res) => {
   try {
     const docRef = db.collection('counters').doc('favorites');
 
-    // Используем atomic increment — это 100% надёжно
+    // Атомарно увеличиваем/уменьшаем счётчик
     await docRef.update({
       [gameId]: admin.firestore.FieldValue.increment(favoriteChange)
     });
 
-    // Получаем актуальное значение
+    // Читаем актуальное значение
     const snap = await docRef.get();
     const data = snap.data() || {};
-    const currentCount = data[gameId] || 0;
+    let count = data[gameId] || 0;
 
-    // Гарантируем, что не уйдёт в минус
-    if (currentCount < 0) {
+    // Защита от отрицательных значений
+    if (count < 0) {
       await docRef.update({ [gameId]: 0 });
-      res.json({ favorite: 0 });
-    } else {
-      res.json({ favorite: currentCount });
+      count = 0;
     }
+
+    res.json({ favorite: count });
   } catch (err) {
-    // Если документ не существует — создаём его
+    // Если документ не существует — создаём
     if (err.code === 5) { // NOT_FOUND
+      const initial = favoriteChange > 0 ? 1 : 0;
       await db.collection('counters').doc('favorites').set({
-        [gameId]: favoriteChange > 0 ? 1 : 0
+        [gameId]: initial
       }, { merge: true });
-      res.json({ favorite: favoriteChange > 0 ? 1 : 0 });
+      res.json({ favorite: initial });
     } else {
       console.error('PATCH favorite error:', err);
       res.status(500).json({ error: 'Internal error' });
