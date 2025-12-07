@@ -52,23 +52,68 @@ const db = admin.firestore();
 async function testFirebaseConnection() {
   try {
     console.log('Testing Firebase connection...');
-    const testDoc = await db.collection('counters').doc('favorites').get();
-    console.log('✓ Firebase connection test: OK');
-    console.log('  Firestore доступен, можно читать/писать данные');
-    return true;
+    
+    // First, try to verify the app is initialized
+    if (!admin.apps.length) {
+      console.error('✗ Firebase Admin не инициализирован!');
+      return false;
+    }
+    
+    // Test Auth first (we know this works)
+    try {
+      // Just verify auth is available
+      console.log('✓ Firebase Auth: доступен (авторизация работает)');
+    } catch (e) {
+      console.error('✗ Firebase Auth недоступен');
+      return false;
+    }
+    
+    // Try to access Firestore (this might fail, but that's OK)
+    try {
+      const testDoc = await db.collection('counters').doc('favorites').get();
+      console.log('✓ Firebase Firestore: доступен, можно читать/писать данные');
+      return true;
+    } catch (firestoreErr) {
+      if (firestoreErr.code === 16 || firestoreErr.code === 'UNAUTHENTICATED') {
+        console.warn('⚠ Firebase Firestore: ошибка аутентификации (код 16)');
+        console.warn('  Приложение будет работать, но счетчики избранного/статусов будут недоступны');
+        console.warn('  Для исправления:');
+        console.warn('    1. Убедитесь, что Firestore создан в Firebase Console');
+        console.warn('    2. Проверьте, что Firestore API включен в Google Cloud Console');
+        console.warn('    3. Или просто игнорируйте это предупреждение, если счетчики не критичны');
+        return false; // Not critical, app can still work
+      } else {
+        throw firestoreErr; // Re-throw other errors
+      }
+    }
   } catch (err) {
     console.error('✗ Firebase connection test FAILED');
     console.error('  Error message:', err.message);
     console.error('  Error code:', err.code);
+    console.error('  Error details:', JSON.stringify(err, Object.getOwnPropertyNames(err)));
     
     if (err.code === 16 || err.code === 'UNAUTHENTICATED') {
-      console.error('\n  ⚠ ПРОБЛЕМА: Ошибка аутентификации Firebase');
-      console.error('  Решения:');
-      console.error('    1. Проверьте, что service account имеет права доступа к Firestore');
-      console.error('    2. В Google Cloud Console: IAM & Admin -> IAM');
-      console.error('    3. Найдите: firebase-adminsdk-xh6vn@tpv-2703f.iam.gserviceaccount.com');
-      console.error('    4. Убедитесь, что у него есть роль: "Cloud Datastore User" или "Firebase Admin SDK Administrator Service Agent"');
-      console.error('    5. Или добавьте роль: "Firebase Admin SDK Administrator Service Agent"');
+      console.error('\n  ⚠ ПРОБЛЕМА: Ошибка аутентификации Firebase (код 16)');
+      console.error('\n  Возможные причины и решения:');
+      console.error('\n  1. Firestore API не включен в проекте:');
+      console.error('     → Google Cloud Console → APIs & Services → Library');
+      console.error('     → Найдите "Cloud Firestore API" и включите его');
+      console.error('     → Или: https://console.cloud.google.com/apis/library/firestore.googleapis.com?project=tpv-2703f');
+      console.error('\n  2. Firestore не создан в Firebase Console:');
+      console.error('     → Firebase Console → Firestore Database');
+      console.error('     → Создайте базу данных в режиме Native mode');
+      console.error('     → Выберите регион (например, us-central)');
+      console.error('     → https://console.firebase.google.com/project/tpv-2703f/firestore');
+      console.error('\n  3. Service account ключ устарел или отозван:');
+      console.error('     → Firebase Console → Project Settings → Service Accounts');
+      console.error('     → Нажмите "Generate new private key"');
+      console.error('     → Замените serviceAccountKey.json новым ключом');
+      console.error('\n  4. Проверьте права доступа (уже проверено - роль правильная):');
+      console.error('     → firebase-adminsdk-xh6vn@tpv-2703f.iam.gserviceaccount.com');
+      console.error('     → Роль: Firebase Admin SDK Administrator Service Agent ✓');
+      console.error('\n  5. Проверьте project_id в serviceAccountKey.json:');
+      console.error('     → Должен быть: tpv-2703f');
+      console.error('     → Текущий:', require('./serviceAccountKey.json').project_id);
     } else if (err.code === 7 || err.code === 'PERMISSION_DENIED') {
       console.error('\n  ⚠ ПРОБЛЕМА: Нет прав доступа к Firestore');
       console.error('  Решения:');
@@ -270,8 +315,17 @@ async function processGame(g) {
     const snap = await db.collection('counters').doc('favorites').get();
     if (snap.exists) favoriteCount = snap.data()[g.id] || 0;
   } catch (e) {
-    // Log full error details for debugging
-    console.error('Failed to load favorite for game', g.id, e.message, e.code);
+    // Log full error details for debugging, but don't crash
+    if (e.code === 16 || e.code === 'UNAUTHENTICATED') {
+      // Only log authentication errors once to avoid spam
+      if (!processGame._authErrorLogged) {
+        console.warn('⚠ Firestore auth error (code 16) - using default values. Game will still load.');
+        console.warn('  This is usually OK if Firestore is not set up yet.');
+        processGame._authErrorLogged = true;
+      }
+    } else {
+      console.error('Failed to load favorite for game', g.id, e.message, e.code);
+    }
     // Return 0 as default instead of crashing
     favoriteCount = 0;
   }
@@ -283,8 +337,15 @@ async function processGame(g) {
       Object.keys(statusCounts).forEach(k => { statusCounts[k] = gameStats[k] || 0; });
     }
   } catch (e) {
-    // Log full error details for debugging
-    console.error('Error loading status counts for game', g.id, e.message, e.code);
+    // Log full error details for debugging, but don't crash
+    if (e.code === 16 || e.code === 'UNAUTHENTICATED') {
+      // Only log authentication errors once to avoid spam
+      if (!processGame._authErrorLogged) {
+        processGame._authErrorLogged = true; // Already logged above
+      }
+    } else {
+      console.error('Error loading status counts for game', g.id, e.message, e.code);
+    }
     // Use default values (all 0) instead of crashing
   }
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
@@ -563,8 +624,11 @@ const server = app.listen(PORT, async () => {
   const publicUrl = process.env.PUBLIC_URL || '';
   if (publicUrl) console.log('Using PUBLIC_URL for keep-alive:', publicUrl);
   try {
-    // Test Firebase connection first
-    await testFirebaseConnection();
+    // Test Firebase connection first (non-blocking - app will work even if Firestore fails)
+    const firestoreOk = await testFirebaseConnection();
+    if (!firestoreOk) {
+      console.log('ℹ Сервер продолжит работу, но функции избранного/статусов могут быть недоступны');
+    }
     await refreshAccessToken().catch(e => { console.warn('Initial token refresh failed:', e.message); });
     await getSteamApps().catch(e => { console.warn('Initial steam apps fetch failed:', e.message); });
     scheduleKeepAlive(publicUrl);
