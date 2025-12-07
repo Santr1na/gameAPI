@@ -414,16 +414,22 @@ app.delete('/games/:id/favorite', authenticate, async (req, res) => {
 app.patch('/games/:id', authenticate, async (req, res) => {
   const gameId = req.params.id;
   const { favoriteChange } = req.body;
-  if (!gameId || !/^\d+$/.test(gameId) || Math.abs(favoriteChange) !== 1) {
+
+  if (!gameId || !/^\d+$/.test(gameId) || typeof favoriteChange !== 'number' || Math.abs(favoriteChange) !== 1) {
     return res.status(400).json({ error: 'Invalid request' });
   }
+
   try {
     const docRef = db.collection('counters').doc('favorites');
-    // Atomic increment
-    await docRef.set({ [gameId]: admin.firestore.FieldValue.increment(favoriteChange) }, { merge: true });
+    
+    // Atomic increment using update() instead of set()
+    await docRef.update({ [gameId]: admin.firestore.FieldValue.increment(favoriteChange) });
+    
+    // Get updated count
     const snap = await docRef.get();
     const data = snap.data() || {};
     const count = Math.max(data[gameId] || 0, 0);
+
     res.json({ favorite: count });
   } catch (err) {
     console.error('PATCH favorite error:', err);
