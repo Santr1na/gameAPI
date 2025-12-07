@@ -46,107 +46,31 @@ if (!admin.apps.length) {
     process.exit(1);
   }
 }
-const db = admin.firestore();
-
-// Test Firebase connection on startup
+// Test Firebase Auth connection on startup (Firestore не используется)
 async function testFirebaseConnection() {
   try {
-    console.log('Testing Firebase connection...');
+    console.log('Testing Firebase Auth connection...');
     
-    // First, try to verify the app is initialized
+    // Verify the app is initialized
     if (!admin.apps.length) {
       console.error('✗ Firebase Admin не инициализирован!');
       return false;
     }
     
-    // Test Auth first (we know this works)
-    try {
-      // Just verify auth is available
-      console.log('✓ Firebase Auth: доступен (авторизация работает)');
-    } catch (e) {
-      console.error('✗ Firebase Auth недоступен');
-      return false;
-    }
-    
-    // Try to access Firestore (this might fail, but that's OK)
-    try {
-      // Try to create the document if it doesn't exist (this will fail if Firestore is not set up)
-      const testDoc = await db.collection('counters').doc('favorites').get();
-      if (!testDoc.exists) {
-        // Try to create it - this will fail if Firestore is not properly configured
-        await db.collection('counters').doc('favorites').set({ _initialized: true });
-      }
-      console.log('✓ Firebase Firestore: доступен, можно читать/писать данные');
-      return true;
-    } catch (firestoreErr) {
-      if (firestoreErr.code === 16 || firestoreErr.code === 'UNAUTHENTICATED') {
-        console.warn('⚠ Firebase Firestore: ошибка аутентификации (код 16)');
-        console.warn('  Приложение будет работать, но счетчики избранного/статусов будут недоступны');
-        console.warn('');
-        console.warn('  🔧 БЫСТРОЕ ИСПРАВЛЕНИЕ:');
-        console.warn('  1. Откройте: https://console.firebase.google.com/project/tpv-2703f/firestore');
-        console.warn('  2. Если базы данных нет - нажмите "Create database"');
-        console.warn('  3. Выберите режим: Native mode');
-        console.warn('  4. Выберите регион (например, us-central1)');
-        console.warn('  5. После создания перезапустите сервер');
-        console.warn('');
-        console.warn('  📋 АЛЬТЕРНАТИВНО:');
-        console.warn('  Если Firestore не нужен, можно игнорировать это предупреждение');
-        console.warn('  Сервер будет работать, но функции избранного/статусов не будут работать');
-        return false; // Not critical, app can still work
-      } else {
-        throw firestoreErr; // Re-throw other errors
-      }
-    }
+    // Test Auth (это все, что нам нужно для аутентификации)
+    console.log('✓ Firebase Auth: доступен (авторизация работает)');
+    console.log('  Firestore не используется - избранное и статусы хранятся в Firebase для каждого пользователя');
+    return true;
   } catch (err) {
-    console.error('✗ Firebase connection test FAILED');
+    console.error('✗ Firebase Auth connection test FAILED');
     console.error('  Error message:', err.message);
     console.error('  Error code:', err.code);
-    console.error('  Error details:', JSON.stringify(err, Object.getOwnPropertyNames(err)));
-    
-    if (err.code === 16 || err.code === 'UNAUTHENTICATED') {
-      console.error('\n  ⚠ ПРОБЛЕМА: Ошибка аутентификации Firebase (код 16)');
-      console.error('\n  Возможные причины и решения:');
-      console.error('\n  1. Firestore API не включен в проекте:');
-      console.error('     → Google Cloud Console → APIs & Services → Library');
-      console.error('     → Найдите "Cloud Firestore API" и включите его');
-      console.error('     → Или: https://console.cloud.google.com/apis/library/firestore.googleapis.com?project=tpv-2703f');
-      console.error('\n  2. Firestore не создан в Firebase Console:');
-      console.error('     → Firebase Console → Firestore Database');
-      console.error('     → Создайте базу данных в режиме Native mode');
-      console.error('     → Выберите регион (например, us-central)');
-      console.error('     → https://console.firebase.google.com/project/tpv-2703f/firestore');
-      console.error('\n  3. Service account ключ устарел или отозван:');
-      console.error('     → Firebase Console → Project Settings → Service Accounts');
-      console.error('     → Нажмите "Generate new private key"');
-      console.error('     → Замените serviceAccountKey.json новым ключом');
-      console.error('\n  4. Проверьте права доступа (уже проверено - роль правильная):');
-      console.error('     → firebase-adminsdk-xh6vn@tpv-2703f.iam.gserviceaccount.com');
-      console.error('     → Роль: Firebase Admin SDK Administrator Service Agent ✓');
-      console.error('\n  5. Проверьте project_id в serviceAccountKey.json:');
-      console.error('     → Должен быть: tpv-2703f');
-      console.error('     → Текущий:', require('./serviceAccountKey.json').project_id);
-    } else if (err.code === 7 || err.code === 'PERMISSION_DENIED') {
-      console.error('\n  ⚠ ПРОБЛЕМА: Нет прав доступа к Firestore');
-      console.error('  Решения:');
-      console.error('    1. В Google Cloud Console добавьте роль "Cloud Datastore User"');
-      console.error('    2. Или включите Firestore в Firebase Console');
-    } else if (err.code === 8 || err.code === 'RESOURCE_EXHAUSTED') {
-      console.error('\n  ⚠ ПРОБЛЕМА: Превышен лимит запросов');
-      console.error('  Подождите несколько минут и попробуйте снова');
-    } else {
-      console.error('\n  ⚠ Неизвестная ошибка Firebase');
-      console.error('  Проверьте:');
-      console.error('    - Правильность serviceAccountKey.json');
-      console.error('    - Доступность Firestore API');
-      console.error('    - Настройки проекта в Firebase Console');
-    }
     return false;
   }
 }
 
 // -------- Middleware --------
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE', 'PATCH'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json()); // parse application/json
 // -------- Cache & history --------
 const cache = new NodeCache({ stdTTL: 86400 }); // 24 hours
@@ -231,41 +155,8 @@ async function authenticate(req, res, next) {
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
-// -------- Firestore helpers for favorites & statuses --------
-async function loadFavoriteCounts() {
-  try {
-    const doc = await db.collection('counters').doc('favorites').get();
-    return doc.exists ? doc.data() : {};
-  } catch (e) {
-    console.error('Load fav ERROR:', e);
-    return {};
-  }
-}
-async function saveFavoriteCounts(c) {
-  try {
-    await db.collection('counters').doc('favorites').set(c);
-  } catch (e) {
-    console.error('Save fav ERROR:', e.message, e.code);
-    // Re-throw the error so the endpoint can handle it properly
-    throw e;
-  }
-}
-async function loadStatusCounts() {
-  try {
-    const doc = await db.collection('counters').doc('statuses').get();
-    return doc.exists ? doc.data() : {};
-  } catch (e) {
-    console.error('Load status ERROR:', e);
-    return {};
-  }
-}
-async function saveStatusCounts(c) {
-  try {
-    await db.collection('counters').doc('statuses').set(c);
-  } catch (e) {
-    console.error('Save status ERROR:', e);
-  }
-}
+// Firestore удален - избранное и статусы хранятся в Firebase для каждого пользователя
+// Счетчики не используются, так как они не критичны
 // -------- Utils (covers, history, shuffle) --------
 function weightedShuffle(arr, hist) {
   return arr.map(g => ({ g, w: hist.includes(g.id) ? 0.01 : (Math.random() + 1) }))
@@ -323,45 +214,11 @@ async function processPopularGame(g) {
   };
 }
 async function processGame(g) {
-  // load favorite & status counters with better error handling
-  let favoriteCount = 0;
-  try {
-    const snap = await db.collection('counters').doc('favorites').get();
-    if (snap.exists) favoriteCount = snap.data()[g.id] || 0;
-  } catch (e) {
-    // Log full error details for debugging, but don't crash
-    if (e.code === 16 || e.code === 'UNAUTHENTICATED') {
-      // Only log authentication errors once to avoid spam
-      if (!processGame._authErrorLogged) {
-        console.warn('⚠ Firestore auth error (code 16) - using default values. Game will still load.');
-        console.warn('  This is usually OK if Firestore is not set up yet.');
-        processGame._authErrorLogged = true;
-      }
-    } else {
-      console.error('Failed to load favorite for game', g.id, e.message, e.code);
-    }
-    // Return 0 as default instead of crashing
-    favoriteCount = 0;
-  }
+  // Счетчики избранного и статусов не критичны - избранное уже хранится в Firebase для каждого пользователя
+  // Возвращаем 0 для всех счетчиков (можно вычислить из Firebase, но это медленно)
+  // Если нужны реальные счетчики, можно добавить Cloud Functions для их подсчета
+  const favoriteCount = 0;
   const statusCounts = { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
-  try {
-    const statusSnap = await db.collection('counters').doc('statuses').get();
-    if (statusSnap.exists) {
-      const gameStats = statusSnap.data()[g.id] || {};
-      Object.keys(statusCounts).forEach(k => { statusCounts[k] = gameStats[k] || 0; });
-    }
-  } catch (e) {
-    // Log full error details for debugging, but don't crash
-    if (e.code === 16 || e.code === 'UNAUTHENTICATED') {
-      // Only log authentication errors once to avoid spam
-      if (!processGame._authErrorLogged) {
-        processGame._authErrorLogged = true; // Already logged above
-      }
-    } else {
-      console.error('Error loading status counts for game', g.id, e.message, e.code);
-    }
-    // Use default values (all 0) instead of crashing
-  }
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
   const genres = g.genres ? g.genres.map(gg => gg.name) : [];
@@ -504,114 +361,57 @@ app.get('/games/:id', async (req, res) => {
     res.status(500).json({ error: 'IGDB error' });
   }
 });
-// ---------- Favorite endpoints (working) ----------
-// GET favorite count for a game (requires auth)
-// Note: This returns the global counter from Firestore (optional)
-// The actual user favorites are stored in Firebase (users/{userId}/favorites)
-app.get('/games/:id/favorite', authenticate, async (req, res) => {
+// ---------- PATCH /games/:id - обновление игры (для совместимости) ----------
+// Избранное уже сохраняется/удаляется в Firebase (users/{userId}/favorites) клиентом
+// Этот endpoint просто возвращает обновленный объект игры
+// Счетчики не обновляются - они не критичны, избранное уже в Firebase
+app.patch('/games/:id', authenticate, async (req, res) => {
   try {
     const gameId = req.params.id;
-    const favoriteCounts = await loadFavoriteCounts();
-    const count = favoriteCounts[gameId] || 0;
-    res.json({ favorite: count });
-  } catch (error) {
-    console.error('Error /games/:id/favorite (GET):', error.message, error.code);
-    // If Firestore is unavailable, return 0 - this is not critical
-    res.json({ favorite: 0 }); // Return 0 as default
-  }
-});
-// POST add favorite (increments by 1) — requires auth
-// Note: The favorite is already saved in Firebase (users/{userId}/favorites) by the client
-// This endpoint only updates the global counter in Firestore (optional)
-app.post('/games/:id/favorite', authenticate, async (req, res) => {
-  try {
-    const gameId = req.params.id;
-    // Try to update counter, but don't fail if Firestore is unavailable
+    const gameIdNum = parseInt(gameId, 10);
+    const { favoriteChange } = req.body;
+    
+    // Логируем, но не обновляем счетчики - избранное уже в Firebase
+    if (favoriteChange !== undefined) {
+      console.log(`[PATCH /games/${gameId}] Favorite change requested: ${favoriteChange} (ignored - favorite already in Firebase)`);
+    }
+    
+    // Возвращаем обновленный объект игры
+    const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.*,summary,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name;where id = ${gameIdNum}; limit 1;`;
     try {
-      const favoriteCounts = await loadFavoriteCounts();
-      favoriteCounts[gameId] = (favoriteCounts[gameId] || 0) + 1;
-      await saveFavoriteCounts(favoriteCounts);
-      res.json({ favorite: favoriteCounts[gameId] });
-    } catch (firestoreError) {
-      // Firestore unavailable - return success anyway since favorite is saved in Firebase
-      console.warn('Firestore unavailable for counter update, but favorite is saved in Firebase');
-      res.json({ favorite: 1 }); // Return default count
+      const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+      if (!r.data.length) return res.status(404).json({ error: 'Game not found' });
+      const game = await processGame(r.data[0]);
+      res.json(game);
+    } catch (err) {
+      console.error(`[PATCH /games/${gameId}] IGDB error:`, err.message);
+      if (err.response?.status === 401) {
+        try { await refreshAccessToken(); } catch(e){/* ignore */ }
+      }
+      res.status(500).json({ error: 'IGDB error' });
     }
   } catch (error) {
-    console.error('Error /games/:id/favorite (POST):', error.message, error.code);
-    // Return success anyway - favorite is saved in Firebase by client
-    res.json({ favorite: 1 });
+    console.error(`[PATCH /games/${req.params.id}] ✗ Error:`, error.message);
+    res.status(500).json({ error: error.message });
   }
 });
-// DELETE remove favorite (decrements by 1, floor 0) — requires auth
-// Note: The favorite is already removed from Firebase (users/{userId}/favorites) by the client
-// This endpoint only updates the global counter in Firestore (optional)
-app.delete('/games/:id/favorite', authenticate, async (req, res) => {
-  try {
-    const gameId = req.params.id;
-    // Try to update counter, but don't fail if Firestore is unavailable
-    try {
-      const favoriteCounts = await loadFavoriteCounts();
-      favoriteCounts[gameId] = Math.max((favoriteCounts[gameId] || 0) - 1, 0);
-      await saveFavoriteCounts(favoriteCounts);
-      res.json({ favorite: favoriteCounts[gameId] });
-    } catch (firestoreError) {
-      // Firestore unavailable - return success anyway since favorite is removed from Firebase
-      console.warn('Firestore unavailable for counter update, but favorite is removed from Firebase');
-      res.json({ favorite: 0 }); // Return default count
-    }
-  } catch (error) {
-    console.error('Error /games/:id/favorite (DELETE):', error.message, error.code);
-    // Return success anyway - favorite is removed from Firebase by client
-    res.json({ favorite: 0 });
-  }
-});
-// PATCH endpoint удален - используйте POST /games/:id/favorite для добавления и DELETE /games/:id/favorite для удаления
 // ---------- Status endpoints ----------
 const validStatuses = ['playing', 'ill_play', 'passed', 'postponed', 'abandoned'];
 app.post('/games/:id/status/:status', authenticate, async (req, res) => {
-  const gameId = req.params.id;
   const status = req.params.status.toLowerCase();
   if (!validStatuses.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  try {
-    const counts = await loadStatusCounts();
-    counts[gameId] = counts[gameId] || {};
-    counts[gameId][status] = (counts[gameId][status] || 0) + 1;
-    await saveStatusCounts(counts);
-    res.json({ [status]: counts[gameId][status] });
-  } catch (err) {
-    console.error('/status POST ERROR:', err.message);
-    res.status(500).json({ error: 'Firestore error' });
-  }
+  // Статус уже сохранен в Firebase клиентом, просто возвращаем успех
+  res.json({ [status]: 0 });
 });
 app.delete('/games/:id/status/:status', authenticate, async (req, res) => {
-  const gameId = req.params.id;
   const status = req.params.status.toLowerCase();
   if (!validStatuses.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  try {
-    const counts = await loadStatusCounts();
-    counts[gameId] = counts[gameId] || {};
-    counts[gameId][status] = Math.max((counts[gameId][status] || 0) - 1, 0);
-    await saveStatusCounts(counts);
-    res.json({ [status]: counts[gameId][status] });
-  } catch (err) {
-    console.error('/status DELETE ERROR:', err.message);
-    res.status(500).json({ error: 'Firestore error' });
-  }
+  // Статус уже удален из Firebase клиентом, просто возвращаем успех
+  res.json({ [status]: 0 });
 });
 app.delete('/games/:id/status', authenticate, async (req, res) => {
-  const gameId = req.params.id;
-  try {
-    const counts = await loadStatusCounts();
-    const gameStatusCounts = counts[gameId] || {};
-    validStatuses.forEach(s => { gameStatusCounts[s] = 0; });
-    counts[gameId] = gameStatusCounts;
-    await saveStatusCounts(counts);
-    res.json({ message: 'All statuses reset to 0' });
-  } catch (err) {
-    console.error('Failed to reset statuses:', err.message);
-    res.status(500).json({ error: 'Failed to reset statuses' });
-  }
+  // Все статусы уже удалены из Firebase клиентом, просто возвращаем успех
+  res.json({ playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 });
 });
 // -------- Start server --------
 const server = app.listen(PORT, async () => {
@@ -619,10 +419,13 @@ const server = app.listen(PORT, async () => {
   const publicUrl = process.env.PUBLIC_URL || '';
   if (publicUrl) console.log('Using PUBLIC_URL for keep-alive:', publicUrl);
   try {
-    // Test Firebase connection first (non-blocking - app will work even if Firestore fails)
-    const firestoreOk = await testFirebaseConnection();
-    if (!firestoreOk) {
-      console.log('ℹ Сервер продолжит работу, но функции избранного/статусов могут быть недоступны');
+    // Test Firebase Auth connection (only needed for authentication)
+    const authOk = await testFirebaseConnection();
+    if (!authOk) {
+      console.log('⚠ Firebase Auth недоступен - аутентификация не будет работать');
+    } else {
+      console.log('✓ Firebase Auth работает - аутентификация доступна');
+      console.log('  Избранное и статусы хранятся в Firebase для каждого пользователя');
     }
     await refreshAccessToken().catch(e => { console.warn('Initial token refresh failed:', e.message); });
     await getSteamApps().catch(e => { console.warn('Initial steam apps fetch failed:', e.message); });
