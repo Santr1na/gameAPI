@@ -284,6 +284,13 @@ async function processGame(g) {
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
   const genres = g.genres ? g.genres.map(gg => gg.name) : [];
+  // videos - преобразуем video_id в полные YouTube URL
+  const videos = g.videos && g.videos.length > 0
+    ? g.videos
+        .filter(v => v.video_id) // фильтруем только те, у которых есть video_id
+        .slice(0, 10) // максимум 3 видео
+        .map(v => `https://www.youtube.com/watch?v=${v.video_id}`)
+    : [];
   // similar games
   const similar = g.similar_games?.length
     ? await Promise.all(g.similar_games.slice(0, 3).map(async s => {
@@ -337,6 +344,7 @@ async function processGame(g) {
     developers: g.involved_companies && g.involved_companies.length > 0
       ? g.involved_companies.filter(c => c.developer || c.publisher).map(c => c.company?.name).filter(Boolean).slice(0,3)
       : [],
+    videos: videos,
     similar_games: similar,
     favorite: favoriteCount,
     playing: gameStatusCounts.playing,
