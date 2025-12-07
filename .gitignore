@@ -1,4 +1,9 @@
 node_modules/
+images/
+dist/
+build/
+coverage/
+.DS_Store
 
 .env
 .env.local
@@ -13,6 +18,7 @@ yarn-error.log*
 .DS_Store
 
 FIREBASE_SERVICE_ACCOUNT_KEY.json
+FIREBASE_SERVICE_ACCOUNT.json
 
 123
 123.pub
