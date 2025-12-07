@@ -46,7 +46,10 @@ if (!admin.apps.length) {
     process.exit(1);
   }
 }
-// Test Firebase Auth connection on startup (Firestore не используется)
+const db = admin.firestore();
+
+// Test Firebase Auth connection on startup (только для проверки токенов пользователей)
+// Firestore проверяется при первом использовании, не блокирует запуск
 async function testFirebaseConnection() {
   try {
     console.log('Testing Firebase Auth connection...');
@@ -57,9 +60,9 @@ async function testFirebaseConnection() {
       return false;
     }
     
-    // Test Auth (это все, что нам нужно для аутентификации)
-    console.log('✓ Firebase Auth: доступен (авторизация работает)');
-    console.log('  Firestore не используется - избранное и статусы хранятся в Firebase для каждого пользователя');
+    // Test Auth (это все, что нужно для проверки токенов пользователей)
+    console.log('✓ Firebase Auth: доступен (проверка токенов пользователей работает)');
+    console.log('  Firestore будет проверен при первом использовании счетчиков');
     return true;
   } catch (err) {
     console.error('✗ Firebase Auth connection test FAILED');
@@ -155,8 +158,37 @@ async function authenticate(req, res, next) {
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
-// Firestore удален - избранное и статусы хранятся в Firebase для каждого пользователя
-// Счетчики не используются, так как они не критичны
+// -------- Firestore helpers для счетчиков избранного --------
+// Счетчики хранятся в Firestore: counters/favorites/{gameId} = количество пользователей
+// Если Firestore недоступен - возвращаем 0, избранное все равно работает через Firebase
+async function loadFavoriteCounts() {
+  try {
+    const doc = await db.collection('counters').doc('favorites').get();
+    return doc.exists ? doc.data() : {};
+  } catch (e) {
+    // Не логируем ошибку при каждом запросе - только при первом использовании
+    if (!loadFavoriteCounts._errorLogged) {
+      console.warn('[loadFavoriteCounts] Firestore недоступен (код ' + (e.code || 'unknown') + ') - счетчики будут 0');
+      console.warn('  Избранное все равно работает через Firebase для каждого пользователя');
+      loadFavoriteCounts._errorLogged = true;
+    }
+    return {};
+  }
+}
+
+async function saveFavoriteCounts(counts) {
+  try {
+    await db.collection('counters').doc('favorites').set(counts);
+  } catch (e) {
+    // Не логируем ошибку при каждом запросе - только при первом использовании
+    if (!saveFavoriteCounts._errorLogged) {
+      console.warn('[saveFavoriteCounts] Firestore недоступен (код ' + (e.code || 'unknown') + ') - счетчики не обновляются');
+      console.warn('  Избранное все равно работает через Firebase для каждого пользователя');
+      saveFavoriteCounts._errorLogged = true;
+    }
+    // Не бросаем ошибку - избранное работает без счетчиков
+  }
+}
 // -------- Utils (covers, history, shuffle) --------
 function weightedShuffle(arr, hist) {
   return arr.map(g => ({ g, w: hist.includes(g.id) ? 0.01 : (Math.random() + 1) }))
@@ -214,10 +246,17 @@ async function processPopularGame(g) {
   };
 }
 async function processGame(g) {
-  // Счетчики избранного и статусов не критичны - избранное уже хранится в Firebase для каждого пользователя
-  // Возвращаем 0 для всех счетчиков (можно вычислить из Firebase, но это медленно)
-  // Если нужны реальные счетчики, можно добавить Cloud Functions для их подсчета
-  const favoriteCount = 0;
+  // Загружаем счетчик избранного из Firestore
+  let favoriteCount = 0;
+  try {
+    const favoriteCounts = await loadFavoriteCounts();
+    const gameIdStr = String(g.id);
+    favoriteCount = favoriteCounts[gameIdStr] || favoriteCounts[g.id] || 0;
+  } catch (e) {
+    console.error(`[processGame] Failed to load favorite count for game ${g.id}:`, e.message);
+    favoriteCount = 0;
+  }
+  
   const statusCounts = { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
@@ -361,19 +400,36 @@ app.get('/games/:id', async (req, res) => {
     res.status(500).json({ error: 'IGDB error' });
   }
 });
-// ---------- PATCH /games/:id - обновление игры (для совместимости) ----------
+// ---------- PATCH /games/:id - обновление счетчика избранного ----------
+// При favoriteChange=1 → увеличить счетчик (игра добавлена в избранное)
+// При favoriteChange=-1 → уменьшить счетчик (игра удалена из избранного)
 // Избранное уже сохраняется/удаляется в Firebase (users/{userId}/favorites) клиентом
-// Этот endpoint просто возвращает обновленный объект игры
-// Счетчики не обновляются - они не критичны, избранное уже в Firebase
-app.patch('/games/:id', authenticate, async (req, res) => {
+// Проверка авторизации не нужна - счетчики это просто статистика
+app.patch('/games/:id', async (req, res) => {
   try {
     const gameId = req.params.id;
     const gameIdNum = parseInt(gameId, 10);
     const { favoriteChange } = req.body;
     
-    // Логируем, но не обновляем счетчики - избранное уже в Firebase
+    // Обновляем счетчик избранного если передан favoriteChange
+    // Если Firestore недоступен - просто пропускаем, избранное уже в Firebase
     if (favoriteChange !== undefined) {
-      console.log(`[PATCH /games/${gameId}] Favorite change requested: ${favoriteChange} (ignored - favorite already in Firebase)`);
+      try {
+        const favoriteCounts = await loadFavoriteCounts();
+        const gameIdStr = String(gameIdNum);
+        const currentCount = favoriteCounts[gameIdStr] || favoriteCounts[gameIdNum] || 0;
+        const newCount = Math.max(currentCount + favoriteChange, 0); // Не меньше 0
+        
+        // Сохраняем оба ключа для совместимости
+        favoriteCounts[gameIdStr] = newCount;
+        favoriteCounts[gameIdNum] = newCount;
+        
+        await saveFavoriteCounts(favoriteCounts);
+        console.log(`[PATCH /games/${gameId}] Favorite count: ${currentCount} → ${newCount} (change: ${favoriteChange})`);
+      } catch (firestoreError) {
+        // saveFavoriteCounts уже логирует ошибку, просто продолжаем
+        // Избранное уже сохранено в Firebase клиентом
+      }
     }
     
     // Возвращаем обновленный объект игры
@@ -419,13 +475,14 @@ const server = app.listen(PORT, async () => {
   const publicUrl = process.env.PUBLIC_URL || '';
   if (publicUrl) console.log('Using PUBLIC_URL for keep-alive:', publicUrl);
   try {
-    // Test Firebase Auth connection (only needed for authentication)
+    // Test Firebase Auth (только для проверки токенов пользователей)
     const authOk = await testFirebaseConnection();
     if (!authOk) {
       console.log('⚠ Firebase Auth недоступен - аутентификация не будет работать');
     } else {
-      console.log('✓ Firebase Auth работает - аутентификация доступна');
-      console.log('  Избранное и статусы хранятся в Firebase для каждого пользователя');
+      console.log('✓ Firebase Auth работает - проверка токенов пользователей доступна');
+      console.log('  Счетчики избранного будут работать если Firestore доступен');
+      console.log('  Избранное всегда работает через Firebase для каждого пользователя');
     }
     await refreshAccessToken().catch(e => { console.warn('Initial token refresh failed:', e.message); });
     await getSteamApps().catch(e => { console.warn('Initial steam apps fetch failed:', e.message); });
