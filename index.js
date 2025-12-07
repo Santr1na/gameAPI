@@ -134,7 +134,7 @@ async function testFirebaseConnection() {
 }
 
 // -------- Middleware --------
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PATCH', 'DELETE'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json()); // parse application/json
 // -------- Cache & history --------
 const cache = new NodeCache({ stdTTL: 86400 }); // 24 hours
@@ -529,49 +529,7 @@ app.delete('/games/:id/favorite', authenticate, async (req, res) => {
     res.status(500).json({ error: 'Failed to decrement favorite count' });
   }
 });
-// Atomic PATCH endpoint — modifies favorite counter by +1 or -1 based on favoriteChange in body (requires auth)
-app.patch('/games/:id', authenticate, async (req, res) => {
-  const gameId = req.params.id;
-  const { favoriteChange } = req.body;
-
-  if (!gameId || !/^\d+$/.test(gameId) || typeof favoriteChange !== 'number' || Math.abs(favoriteChange) !== 1) {
-    return res.status(400).json({ error: 'Invalid request' });
-  }
-
-  try {
-    const docRef = db.collection('counters').doc('favorites');
-    
-    // Check if document exists, if not create it first
-    const existingDoc = await docRef.get();
-    if (!existingDoc.exists) {
-      // Create document with initial value
-      await docRef.set({ [gameId]: favoriteChange > 0 ? 1 : 0 });
-    } else {
-      // Atomic increment using update()
-      await docRef.update({ [gameId]: admin.firestore.FieldValue.increment(favoriteChange) });
-    }
-    
-    // Get updated count
-    const snap = await docRef.get();
-    const data = snap.data() || {};
-    const count = Math.max(data[gameId] || 0, 0);
-
-    res.json({ favorite: count });
-  } catch (err) {
-    console.error('PATCH favorite error:', err.message, err.code);
-    // Check if it's an authentication error
-    if (err.code === 16 || err.code === 'UNAUTHENTICATED') {
-      console.error('Firebase authentication failed. Check FIREBASE_SERVICE_ACCOUNT credentials.');
-      return res.status(503).json({ error: 'Service temporarily unavailable. Authentication error.' });
-    }
-    // Check if it's a permission error
-    if (err.code === 7 || err.code === 'PERMISSION_DENIED') {
-      console.error('Firebase permission denied. Check service account permissions.');
-      return res.status(503).json({ error: 'Service temporarily unavailable. Permission denied.' });
-    }
-    res.status(500).json({ error: 'Failed to update favorite' });
-  }
-});
+// PATCH endpoint удален - используйте POST /games/:id/favorite для добавления и DELETE /games/:id/favorite для удаления
 // ---------- Status endpoints ----------
 const validStatuses = ['playing', 'ill_play', 'passed', 'postponed', 'abandoned'];
 app.post('/games/:id/status/:status', authenticate, async (req, res) => {
