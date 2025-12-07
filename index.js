@@ -19,22 +19,75 @@ if (!admin.apps.length) {
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
       });
-      console.log('Firebase Admin подключён через FIREBASE_SERVICE_ACCOUNT (env)');
+      console.log('✓ Firebase Admin подключён через FIREBASE_SERVICE_ACCOUNT (env)');
+      console.log('  Service Account:', serviceAccount.client_email);
+      console.log('  Project ID:', serviceAccount.project_id);
     } else {
       // fallback to local file (useful for dev / VPS with file present)
       const localPath = path.resolve(process.env.FIREBASE_SERVICE_ACCOUNT_PATH || './serviceAccountKey.json');
+      console.log('Loading Firebase credentials from:', localPath);
       serviceAccount = require(localPath);
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
       });
-      console.log('Firebase Admin подключён через serviceAccountKey.json (file)');
+      console.log('✓ Firebase Admin подключён через serviceAccountKey.json (file)');
+      console.log('  Service Account:', serviceAccount.client_email);
+      console.log('  Project ID:', serviceAccount.project_id);
     }
   } catch (err) {
-    console.error('Не удалось инициализировать Firebase:', err.message);
+    console.error('✗ Не удалось инициализировать Firebase:', err.message);
+    if (err.code === 'MODULE_NOT_FOUND') {
+      console.error('  Файл serviceAccountKey.json не найден. Проверьте путь к файлу.');
+    } else if (err.message.includes('JSON')) {
+      console.error('  Ошибка парсинга JSON. Проверьте формат FIREBASE_SERVICE_ACCOUNT.');
+    } else {
+      console.error('  Детали ошибки:', err);
+    }
     process.exit(1);
   }
 }
 const db = admin.firestore();
+
+// Test Firebase connection on startup
+async function testFirebaseConnection() {
+  try {
+    console.log('Testing Firebase connection...');
+    const testDoc = await db.collection('counters').doc('favorites').get();
+    console.log('✓ Firebase connection test: OK');
+    console.log('  Firestore доступен, можно читать/писать данные');
+    return true;
+  } catch (err) {
+    console.error('✗ Firebase connection test FAILED');
+    console.error('  Error message:', err.message);
+    console.error('  Error code:', err.code);
+    
+    if (err.code === 16 || err.code === 'UNAUTHENTICATED') {
+      console.error('\n  ⚠ ПРОБЛЕМА: Ошибка аутентификации Firebase');
+      console.error('  Решения:');
+      console.error('    1. Проверьте, что service account имеет права доступа к Firestore');
+      console.error('    2. В Google Cloud Console: IAM & Admin -> IAM');
+      console.error('    3. Найдите: firebase-adminsdk-xh6vn@tpv-2703f.iam.gserviceaccount.com');
+      console.error('    4. Убедитесь, что у него есть роль: "Cloud Datastore User" или "Firebase Admin SDK Administrator Service Agent"');
+      console.error('    5. Или добавьте роль: "Firebase Admin SDK Administrator Service Agent"');
+    } else if (err.code === 7 || err.code === 'PERMISSION_DENIED') {
+      console.error('\n  ⚠ ПРОБЛЕМА: Нет прав доступа к Firestore');
+      console.error('  Решения:');
+      console.error('    1. В Google Cloud Console добавьте роль "Cloud Datastore User"');
+      console.error('    2. Или включите Firestore в Firebase Console');
+    } else if (err.code === 8 || err.code === 'RESOURCE_EXHAUSTED') {
+      console.error('\n  ⚠ ПРОБЛЕМА: Превышен лимит запросов');
+      console.error('  Подождите несколько минут и попробуйте снова');
+    } else {
+      console.error('\n  ⚠ Неизвестная ошибка Firebase');
+      console.error('  Проверьте:');
+      console.error('    - Правильность serviceAccountKey.json');
+      console.error('    - Доступность Firestore API');
+      console.error('    - Настройки проекта в Firebase Console');
+    }
+    return false;
+  }
+}
+
 // -------- Middleware --------
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PATCH', 'DELETE'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json()); // parse application/json
@@ -211,13 +264,16 @@ async function processPopularGame(g) {
   };
 }
 async function processGame(g) {
-  // load favorite & status counters
+  // load favorite & status counters with better error handling
   let favoriteCount = 0;
   try {
     const snap = await db.collection('counters').doc('favorites').get();
     if (snap.exists) favoriteCount = snap.data()[g.id] || 0;
   } catch (e) {
-    console.error('Failed to load favorite for game', g.id, e.message);
+    // Log full error details for debugging
+    console.error('Failed to load favorite for game', g.id, e.message, e.code);
+    // Return 0 as default instead of crashing
+    favoriteCount = 0;
   }
   const statusCounts = { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
   try {
@@ -227,7 +283,9 @@ async function processGame(g) {
       Object.keys(statusCounts).forEach(k => { statusCounts[k] = gameStats[k] || 0; });
     }
   } catch (e) {
-    console.error('Error loading status counts for game', g.id, e.message);
+    // Log full error details for debugging
+    console.error('Error loading status counts for game', g.id, e.message, e.code);
+    // Use default values (all 0) instead of crashing
   }
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
@@ -422,8 +480,15 @@ app.patch('/games/:id', authenticate, async (req, res) => {
   try {
     const docRef = db.collection('counters').doc('favorites');
     
-    // Atomic increment using update() instead of set()
-    await docRef.update({ [gameId]: admin.firestore.FieldValue.increment(favoriteChange) });
+    // Check if document exists, if not create it first
+    const existingDoc = await docRef.get();
+    if (!existingDoc.exists) {
+      // Create document with initial value
+      await docRef.set({ [gameId]: favoriteChange > 0 ? 1 : 0 });
+    } else {
+      // Atomic increment using update()
+      await docRef.update({ [gameId]: admin.firestore.FieldValue.increment(favoriteChange) });
+    }
     
     // Get updated count
     const snap = await docRef.get();
@@ -432,7 +497,17 @@ app.patch('/games/:id', authenticate, async (req, res) => {
 
     res.json({ favorite: count });
   } catch (err) {
-    console.error('PATCH favorite error:', err);
+    console.error('PATCH favorite error:', err.message, err.code);
+    // Check if it's an authentication error
+    if (err.code === 16 || err.code === 'UNAUTHENTICATED') {
+      console.error('Firebase authentication failed. Check FIREBASE_SERVICE_ACCOUNT credentials.');
+      return res.status(503).json({ error: 'Service temporarily unavailable. Authentication error.' });
+    }
+    // Check if it's a permission error
+    if (err.code === 7 || err.code === 'PERMISSION_DENIED') {
+      console.error('Firebase permission denied. Check service account permissions.');
+      return res.status(503).json({ error: 'Service temporarily unavailable. Permission denied.' });
+    }
     res.status(500).json({ error: 'Failed to update favorite' });
   }
 });
@@ -488,6 +563,8 @@ const server = app.listen(PORT, async () => {
   const publicUrl = process.env.PUBLIC_URL || '';
   if (publicUrl) console.log('Using PUBLIC_URL for keep-alive:', publicUrl);
   try {
+    // Test Firebase connection first
+    await testFirebaseConnection();
     await refreshAccessToken().catch(e => { console.warn('Initial token refresh failed:', e.message); });
     await getSteamApps().catch(e => { console.warn('Initial steam apps fetch failed:', e.message); });
     scheduleKeepAlive(publicUrl);
