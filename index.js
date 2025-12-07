@@ -46,7 +46,8 @@ if (!admin.apps.length) {
     process.exit(1);
   }
 }
-const db = admin.firestore();
+// Firestore не используется - счетчики хранятся в памяти
+// const db = admin.firestore(); // Убрано - не нужен для счетчиков
 
 // Test Firebase Auth connection on startup (только для проверки токенов пользователей)
 // Firestore проверяется при первом использовании, не блокирует запуск
@@ -62,7 +63,8 @@ async function testFirebaseConnection() {
     
     // Test Auth (это все, что нужно для проверки токенов пользователей)
     console.log('✓ Firebase Auth: доступен (проверка токенов пользователей работает)');
-    console.log('  Firestore будет проверен при первом использовании счетчиков');
+    console.log('  Счетчики избранного хранятся в памяти (сбрасываются при перезапуске сервера)');
+    
     return true;
   } catch (err) {
     console.error('✗ Firebase Auth connection test FAILED');
@@ -73,7 +75,7 @@ async function testFirebaseConnection() {
 }
 
 // -------- Middleware --------
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE', 'PATCH'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json()); // parse application/json
 // -------- Cache & history --------
 const cache = new NodeCache({ stdTTL: 86400 }); // 24 hours
@@ -158,36 +160,23 @@ async function authenticate(req, res, next) {
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
-// -------- Firestore helpers для счетчиков избранного --------
-// Счетчики хранятся в Firestore: counters/favorites/{gameId} = количество пользователей
-// Если Firestore недоступен - возвращаем 0, избранное все равно работает через Firebase
-async function loadFavoriteCounts() {
-  try {
-    const doc = await db.collection('counters').doc('favorites').get();
-    return doc.exists ? doc.data() : {};
-  } catch (e) {
-    // Не логируем ошибку при каждом запросе - только при первом использовании
-    if (!loadFavoriteCounts._errorLogged) {
-      console.warn('[loadFavoriteCounts] Firestore недоступен (код ' + (e.code || 'unknown') + ') - счетчики будут 0');
-      console.warn('  Избранное все равно работает через Firebase для каждого пользователя');
-      loadFavoriteCounts._errorLogged = true;
-    }
-    return {};
-  }
+// -------- Счетчики избранного в памяти --------
+// Счетчики хранятся в памяти: favoriteCounts[gameId] = количество пользователей
+// При перезапуске сервера счетчики сбрасываются в 0
+const favoriteCounts = {}; // { gameId: count }
+
+function getFavoriteCount(gameId) {
+  const gameIdStr = String(gameId);
+  return favoriteCounts[gameIdStr] || favoriteCounts[gameId] || 0;
 }
 
-async function saveFavoriteCounts(counts) {
-  try {
-    await db.collection('counters').doc('favorites').set(counts);
-  } catch (e) {
-    // Не логируем ошибку при каждом запросе - только при первом использовании
-    if (!saveFavoriteCounts._errorLogged) {
-      console.warn('[saveFavoriteCounts] Firestore недоступен (код ' + (e.code || 'unknown') + ') - счетчики не обновляются');
-      console.warn('  Избранное все равно работает через Firebase для каждого пользователя');
-      saveFavoriteCounts._errorLogged = true;
-    }
-    // Не бросаем ошибку - избранное работает без счетчиков
-  }
+function updateFavoriteCount(gameId, change) {
+  const gameIdStr = String(gameId);
+  const currentCount = favoriteCounts[gameIdStr] || favoriteCounts[gameId] || 0;
+  const newCount = Math.max(currentCount + change, 0); // Не меньше 0
+  favoriteCounts[gameIdStr] = newCount;
+  favoriteCounts[gameId] = newCount; // Сохраняем оба ключа для совместимости
+  return newCount;
 }
 // -------- Utils (covers, history, shuffle) --------
 function weightedShuffle(arr, hist) {
@@ -246,16 +235,8 @@ async function processPopularGame(g) {
   };
 }
 async function processGame(g) {
-  // Загружаем счетчик избранного из Firestore
-  let favoriteCount = 0;
-  try {
-    const favoriteCounts = await loadFavoriteCounts();
-    const gameIdStr = String(g.id);
-    favoriteCount = favoriteCounts[gameIdStr] || favoriteCounts[g.id] || 0;
-  } catch (e) {
-    console.error(`[processGame] Failed to load favorite count for game ${g.id}:`, e.message);
-    favoriteCount = 0;
-  }
+  // Получаем счетчик избранного из памяти
+  const favoriteCount = getFavoriteCount(g.id);
   
   const statusCounts = { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
@@ -400,55 +381,42 @@ app.get('/games/:id', async (req, res) => {
     res.status(500).json({ error: 'IGDB error' });
   }
 });
-// ---------- PATCH /games/:id - обновление счетчика избранного ----------
-// При favoriteChange=1 → увеличить счетчик (игра добавлена в избранное)
-// При favoriteChange=-1 → уменьшить счетчик (игра удалена из избранного)
-// Избранное уже сохраняется/удаляется в Firebase (users/{userId}/favorites) клиентом
-// Проверка авторизации не нужна - счетчики это просто статистика
-app.patch('/games/:id', async (req, res) => {
+// ---------- Favorite endpoints (как в коммите 80f5e36) ----------
+// GET /games/:id/favorite - получить счетчик избранного
+app.get('/games/:id/favorite', authenticate, async (req, res) => {
   try {
     const gameId = req.params.id;
-    const gameIdNum = parseInt(gameId, 10);
-    const { favoriteChange } = req.body;
-    
-    // Обновляем счетчик избранного если передан favoriteChange
-    // Если Firestore недоступен - просто пропускаем, избранное уже в Firebase
-    if (favoriteChange !== undefined) {
-      try {
-        const favoriteCounts = await loadFavoriteCounts();
-        const gameIdStr = String(gameIdNum);
-        const currentCount = favoriteCounts[gameIdStr] || favoriteCounts[gameIdNum] || 0;
-        const newCount = Math.max(currentCount + favoriteChange, 0); // Не меньше 0
-        
-        // Сохраняем оба ключа для совместимости
-        favoriteCounts[gameIdStr] = newCount;
-        favoriteCounts[gameIdNum] = newCount;
-        
-        await saveFavoriteCounts(favoriteCounts);
-        console.log(`[PATCH /games/${gameId}] Favorite count: ${currentCount} → ${newCount} (change: ${favoriteChange})`);
-      } catch (firestoreError) {
-        // saveFavoriteCounts уже логирует ошибку, просто продолжаем
-        // Избранное уже сохранено в Firebase клиентом
-      }
-    }
-    
-    // Возвращаем обновленный объект игры
-    const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.*,summary,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name;where id = ${gameIdNum}; limit 1;`;
-    try {
-      const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
-      if (!r.data.length) return res.status(404).json({ error: 'Game not found' });
-      const game = await processGame(r.data[0]);
-      res.json(game);
-    } catch (err) {
-      console.error(`[PATCH /games/${gameId}] IGDB error:`, err.message);
-      if (err.response?.status === 401) {
-        try { await refreshAccessToken(); } catch(e){/* ignore */ }
-      }
-      res.status(500).json({ error: 'IGDB error' });
-    }
+    const count = getFavoriteCount(gameId);
+    res.json({ favorite: count });
   } catch (error) {
-    console.error(`[PATCH /games/${req.params.id}] ✗ Error:`, error.message);
-    res.status(500).json({ error: error.message });
+    console.error('Error /games/:id/favorite (GET):', error.message);
+    res.status(500).json({ error: 'Failed to get favorite count' });
+  }
+});
+
+// POST /games/:id/favorite - увеличить счетчик избранного (+1)
+app.post('/games/:id/favorite', authenticate, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const newCount = updateFavoriteCount(gameId, 1);
+    console.log(`[POST /games/${gameId}/favorite] Favorite count: ${newCount}`);
+    res.json({ favorite: newCount });
+  } catch (error) {
+    console.error('Error /games/:id/favorite (POST):', error.message);
+    res.status(500).json({ error: 'Failed to increment favorite count: ' + error.message });
+  }
+});
+
+// DELETE /games/:id/favorite - уменьшить счетчик избранного (-1)
+app.delete('/games/:id/favorite', authenticate, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const newCount = updateFavoriteCount(gameId, -1);
+    console.log(`[DELETE /games/${gameId}/favorite] Favorite count: ${newCount}`);
+    res.json({ favorite: newCount });
+  } catch (error) {
+    console.error('Error /games/:id/favorite (DELETE):', error.message);
+    res.status(500).json({ error: 'Failed to decrement favorite count: ' + error.message });
   }
 });
 // ---------- Status endpoints ----------
