@@ -178,6 +178,49 @@ function updateFavoriteCount(gameId, change) {
   favoriteCounts[gameId] = newCount; // Сохраняем оба ключа для совместимости
   return newCount;
 }
+
+// -------- Счетчики статусов в памяти --------
+// Счетчики хранятся в памяти: statusCounts[gameId][status] = количество пользователей
+// При перезапуске сервера счетчики сбрасываются в 0
+const statusCounts = {}; // { gameId: { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 } }
+
+function getStatusCounts(gameId) {
+  const gameIdStr = String(gameId);
+  const gameStatusCounts = statusCounts[gameIdStr] || statusCounts[gameId];
+  if (gameStatusCounts) {
+    return {
+      playing: gameStatusCounts.playing || 0,
+      ill_play: gameStatusCounts.ill_play || 0,
+      passed: gameStatusCounts.passed || 0,
+      postponed: gameStatusCounts.postponed || 0,
+      abandoned: gameStatusCounts.abandoned || 0
+    };
+  }
+  return { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
+}
+
+function updateStatusCount(gameId, status, change) {
+  const gameIdStr = String(gameId);
+  if (!statusCounts[gameIdStr]) {
+    statusCounts[gameIdStr] = { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
+  }
+  if (!statusCounts[gameId]) {
+    statusCounts[gameId] = statusCounts[gameIdStr];
+  }
+  
+  const currentCount = statusCounts[gameIdStr][status] || 0;
+  const newCount = Math.max(currentCount + change, 0); // Не меньше 0
+  statusCounts[gameIdStr][status] = newCount;
+  statusCounts[gameId][status] = newCount; // Сохраняем оба ключа для совместимости
+  return newCount;
+}
+
+function resetAllStatusCounts(gameId) {
+  const gameIdStr = String(gameId);
+  statusCounts[gameIdStr] = { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
+  statusCounts[gameId] = statusCounts[gameIdStr];
+  return statusCounts[gameIdStr];
+}
 // -------- Utils (covers, history, shuffle) --------
 function weightedShuffle(arr, hist) {
   return arr.map(g => ({ g, w: hist.includes(g.id) ? 0.01 : (Math.random() + 1) }))
@@ -235,10 +278,9 @@ async function processPopularGame(g) {
   };
 }
 async function processGame(g) {
-  // Получаем счетчик избранного из памяти
+  // Получаем счетчики избранного и статусов из памяти
   const favoriteCount = getFavoriteCount(g.id);
-  
-  const statusCounts = { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
+  const gameStatusCounts = getStatusCounts(g.id);
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
   const genres = g.genres ? g.genres.map(gg => gg.name) : [];
@@ -297,11 +339,11 @@ async function processGame(g) {
       : [],
     similar_games: similar,
     favorite: favoriteCount,
-    playing: statusCounts.playing,
-    ill_play: statusCounts.ill_play,
-    passed: statusCounts.passed,
-    postponed: statusCounts.postponed,
-    abandoned: statusCounts.abandoned
+    playing: gameStatusCounts.playing,
+    ill_play: gameStatusCounts.ill_play,
+    passed: gameStatusCounts.passed,
+    postponed: gameStatusCounts.postponed,
+    abandoned: gameStatusCounts.abandoned
   };
 }
 // -------- Routes --------
@@ -419,23 +461,54 @@ app.delete('/games/:id/favorite', authenticate, async (req, res) => {
     res.status(500).json({ error: 'Failed to decrement favorite count: ' + error.message });
   }
 });
-// ---------- Status endpoints ----------
+// ---------- Status endpoints (как в коммите 80f5e36) ----------
 const validStatuses = ['playing', 'ill_play', 'passed', 'postponed', 'abandoned'];
+
+// POST /games/:id/status/:status - увеличить счетчик статуса (+1)
 app.post('/games/:id/status/:status', authenticate, async (req, res) => {
-  const status = req.params.status.toLowerCase();
-  if (!validStatuses.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  // Статус уже сохранен в Firebase клиентом, просто возвращаем успех
-  res.json({ [status]: 0 });
+  try {
+    const gameId = req.params.id;
+    const status = req.params.status.toLowerCase();
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    const newCount = updateStatusCount(gameId, status, 1);
+    console.log(`[POST /games/${gameId}/status/${status}] Status count: ${newCount}`);
+    res.json({ [status]: newCount });
+  } catch (error) {
+    console.error(`Error /games/:id/status/:status (POST):`, error.message);
+    res.status(500).json({ error: `Failed to increment ${req.params.status} count: ` + error.message });
+  }
 });
+
+// DELETE /games/:id/status/:status - уменьшить счетчик статуса (-1)
 app.delete('/games/:id/status/:status', authenticate, async (req, res) => {
-  const status = req.params.status.toLowerCase();
-  if (!validStatuses.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  // Статус уже удален из Firebase клиентом, просто возвращаем успех
-  res.json({ [status]: 0 });
+  try {
+    const gameId = req.params.id;
+    const status = req.params.status.toLowerCase();
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    const newCount = updateStatusCount(gameId, status, -1);
+    console.log(`[DELETE /games/${gameId}/status/${status}] Status count: ${newCount}`);
+    res.json({ [status]: newCount });
+  } catch (error) {
+    console.error(`Error /games/:id/status/:status (DELETE):`, error.message);
+    res.status(500).json({ error: `Failed to decrement ${req.params.status} count: ` + error.message });
+  }
 });
+
+// DELETE /games/:id/status - сбросить все счетчики статусов в 0
 app.delete('/games/:id/status', authenticate, async (req, res) => {
-  // Все статусы уже удалены из Firebase клиентом, просто возвращаем успех
-  res.json({ playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 });
+  try {
+    const gameId = req.params.id;
+    const resetCounts = resetAllStatusCounts(gameId);
+    console.log(`[DELETE /games/${gameId}/status] All status counts reset to 0`);
+    res.json(resetCounts);
+  } catch (error) {
+    console.error(`Error /games/:id/status (DELETE):`, error.message);
+    res.status(500).json({ error: 'Failed to reset statuses: ' + error.message });
+  }
 });
 // -------- Start server --------
 const server = app.listen(PORT, async () => {
