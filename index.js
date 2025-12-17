@@ -80,6 +80,7 @@ app.use(express.json()); // parse application/json
 // -------- Cache & history --------
 const cache = new NodeCache({ stdTTL: 86400 }); // 24 hours
 const historyCache = new NodeCache({ stdTTL: 604800 }); // 7 days
+const gameCache = new NodeCache({ stdTTL: 3600 }); // 1 hour cache for individual games
 const historyKey = 'recent_games';
 // -------- IGDB / Steam config --------
 const clientId = process.env.IGDB_CLIENT_ID || '6suowimw8bemqf3u9gurh7qnpx74sd';
@@ -284,11 +285,10 @@ async function processGame(g) {
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
   const genres = g.genres ? g.genres.map(gg => gg.name) : [];
-  // videos - преобразуем video_id в полные YouTube URL
+  // videos - преобразуем video_id в полные YouTube URL (без ограничения количества)
   const videos = g.videos && g.videos.length > 0
     ? g.videos
         .filter(v => v.video_id) // фильтруем только те, у которых есть video_id
-        .slice(0, 10) // максимум 3 видео
         .map(v => `https://www.youtube.com/watch?v=${v.video_id}`)
     : [];
   // similar games
@@ -417,18 +417,75 @@ app.get('/games', async (req, res) => {
 app.get('/games/:id', async (req, res) => {
   const id = req.params.id;
   if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'Invalid ID' });
+  
+  // Проверяем кэш
+  const cacheKey = `game_${id}`;
+  const cached = gameCache.get(cacheKey);
+  if (cached) {
+    console.log(`[GET /games/${id}] Cache hit`);
+    return res.json(cached);
+  }
+  
   const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.*,summary,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name;where id = ${id}; limit 1;`;
-  try {
-    const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
-    if (!r.data.length) return res.status(404).json({ error: 'Game not found' });
-    const game = await processGame(r.data[0]);
-    res.json(game);
-  } catch (err) {
-    console.error('/games/:id ERROR:', err.response?.data || err.message);
-    if (err.response?.status === 401) {
-      try { await refreshAccessToken(); } catch(e){/* ignore */ }
+  
+  // Функция для выполнения запроса с повторными попытками
+  const fetchGameWithRetry = async (maxRetries = 3) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`[GET /games/${id}] Attempt ${attempt}/${maxRetries}`);
+        const r = await axios.post(igdbUrl, body, { 
+          headers: igdbHeaders, 
+          timeout: 15000 // Увеличен таймаут до 15 секунд
+        });
+        
+        if (!r.data.length) {
+          return { error: 'Game not found', status: 404 };
+        }
+        
+        const game = await processGame(r.data[0]);
+        // Сохраняем в кэш
+        gameCache.set(cacheKey, game, 3600); // 1 час
+        return { game };
+      } catch (err) {
+        console.error(`[GET /games/${id}] Attempt ${attempt} failed:`, err.response?.status || err.message);
+        
+        // Если токен истек, обновляем и повторяем
+        if (err.response?.status === 401) {
+          try {
+            await refreshAccessToken();
+            // Продолжаем попытку после обновления токена
+            continue;
+          } catch (tokenErr) {
+            console.error(`[GET /games/${id}] Token refresh failed:`, tokenErr.message);
+            if (attempt === maxRetries) {
+              return { error: 'Authentication failed', status: 500 };
+            }
+          }
+        }
+        
+        // Для других ошибок делаем задержку перед повторной попыткой
+        if (attempt < maxRetries) {
+          const delay = Math.min(1000 * attempt, 3000); // Экспоненциальная задержка, максимум 3 секунды
+          console.log(`[GET /games/${id}] Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          return { error: err.response?.data?.message || err.message || 'IGDB error', status: err.response?.status || 500 };
+        }
+      }
     }
-    res.status(500).json({ error: 'IGDB error' });
+  };
+  
+  try {
+    const result = await fetchGameWithRetry();
+    
+    if (result.error) {
+      return res.status(result.status || 500).json({ error: result.error });
+    }
+    
+    res.json(result.game);
+  } catch (err) {
+    console.error('/games/:id FATAL ERROR:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 // ---------- Favorite endpoints (как в коммите 80f5e36) ----------
@@ -518,6 +575,7 @@ app.delete('/games/:id/status', authenticate, async (req, res) => {
     res.status(500).json({ error: 'Failed to reset statuses: ' + error.message });
   }
 });
+
 // -------- Start server --------
 const server = app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT} at ${new Date().toISOString()}`);
