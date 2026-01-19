@@ -405,11 +405,28 @@ app.get('/search', async (req, res) => {
       const singleTerm = searchTerms[0];
       // Если запрос длиннее 4 символов, делаем дополнительные запросы для частичного поиска
       if (singleTerm.length >= 4) {
-        // Добавляем поиск по первым символам (для "minecra" ищем игры с "mine" в начале)
-        // Используем больше символов для более точного поиска (минимум 4)
-        const prefix = singleTerm.substring(0, Math.max(4, Math.floor(singleTerm.length * 0.8)));
-        if (prefix !== singleTerm && prefix.length >= 4) {
-          searchQueries.push(prefix);
+        // Добавляем поиск по нескольким префиксам для лучшего покрытия
+        // Для "minecra" (7 символов) делаем запросы: "mine" (4), "minec" (5), "minecr" (6)
+        const prefixes = [];
+        
+        // Добавляем префикс из 4 символов
+        if (singleTerm.length >= 4) {
+          prefixes.push(singleTerm.substring(0, 4));
+        }
+        // Добавляем префикс из 5 символов (если запрос длиннее 5)
+        if (singleTerm.length >= 5) {
+          prefixes.push(singleTerm.substring(0, 5));
+        }
+        // Добавляем префикс из 6 символов (если запрос длиннее 6)
+        if (singleTerm.length >= 6) {
+          prefixes.push(singleTerm.substring(0, 6));
+        }
+        
+        // Добавляем уникальные префиксы в поисковые запросы
+        for (const prefix of prefixes) {
+          if (prefix !== singleTerm && prefix.length >= 4 && !searchQueries.includes(prefix)) {
+            searchQueries.push(prefix);
+          }
         }
       }
     }
@@ -444,18 +461,18 @@ app.get('/search', async (req, res) => {
     
     // Если основной поиск дал мало результатов и запрос состоит из одного слова,
     // пробуем найти игры через более широкий поиск и фильтруем их
-    if (allGames.length < limit && searchTerms.length === 1) {
+    if (allGames.length < limit * 2 && searchTerms.length === 1) {
       const singleTerm = searchTerms[0].toLowerCase();
       // Делаем дополнительный поиск с первыми символами для частичного совпадения
       if (singleTerm.length >= 4) {
         try {
-          // Используем префикс для более широкого поиска
-          // Для "minecra" (7 символов) возьмем "mine" (4 символа) или "minec" (5 символов)
-          const prefixQuery = singleTerm.substring(0, Math.max(4, Math.min(5, Math.floor(singleTerm.length * 0.7))));
+          // Используем префикс "mine" (4 символа) для более широкого поиска
+          // Это должно найти "Minecraft", так как "minecraft" начинается с "mine"
+          const prefixQuery = singleTerm.substring(0, 4);
           
           // Проверяем, не делали ли мы уже этот запрос
           if (!searchQueries.includes(prefixQuery)) {
-            const fallbackBody = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${prefixQuery}"; limit 300;`;
+            const fallbackBody = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${prefixQuery}"; limit 500;`;
             const fallbackResponse = await axios.post(igdbUrl, fallbackBody, { headers: igdbHeaders, timeout: 10000 })
               .catch(() => ({ data: [] }));
             
@@ -542,6 +559,21 @@ app.get('/search', async (req, res) => {
         nameLower.includes(term) || nameWords.some(w => w.startsWith(term))
       );
       score += matchedWords.length * 10;
+      
+      // Дополнительный бонус, если слово в названии полностью содержит запрос
+      // Например, "minecraft" содержит "minecra" - это должно быть выше, чем "minecart"
+      // Важно: проверяем, что слово начинается с запроса или содержит запрос и продолжается
+      const wordWithQuery = nameWords.find(word => 
+        word.includes(queryLower) && word.length > queryLower.length
+      );
+      if (wordWithQuery) {
+        // Если слово начинается с запроса - это самое точное совпадение
+        if (wordWithQuery.startsWith(queryLower)) {
+          score += 60; // Очень большой бонус за игры, где слово начинается с запроса
+        } else if (wordWithQuery.includes(queryLower)) {
+          score += 40; // Большой бонус за игры, где слово содержит запрос и продолжается
+        }
+      }
       
       // Бонус за рейтинг (игры с рейтингом выше получают небольшой бонус)
       if (game.aggregated_rating) score += game.aggregated_rating / 10;
