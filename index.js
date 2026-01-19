@@ -455,16 +455,29 @@ app.get('/search', async (req, res) => {
       // Делаем дополнительный поиск с первыми символами для частичного совпадения
       if (singleTerm.length >= 4) {
         try {
-          const prefixQuery = singleTerm.substring(0, Math.max(3, Math.floor(singleTerm.length * 0.6)));
-          const fallbackBody = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${prefixQuery}"; limit 100;`;
+          // Используем более длинный префикс для более точного поиска
+          const prefixQuery = singleTerm.substring(0, Math.max(4, Math.floor(singleTerm.length * 0.7)));
+          const fallbackBody = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${prefixQuery}"; limit 200;`;
           const fallbackResponse = await axios.post(igdbUrl, fallbackBody, { headers: igdbHeaders, timeout: 10000 })
             .catch(() => ({ data: [] }));
           
           if (fallbackResponse.data && Array.isArray(fallbackResponse.data)) {
-            // Фильтруем результаты вручную - ищем игры, где название содержит запрос
+            // Строгая фильтрация - ищем игры, где название содержит запрос как подстроку
+            // или начинается с запроса, или любое слово в названии начинается с запроса
             const filteredGames = fallbackResponse.data.filter(game => {
               const nameLower = (game.name || '').toLowerCase();
-              return nameLower.includes(singleTerm) || singleTerm.includes(nameLower.substring(0, singleTerm.length));
+              const nameWords = nameLower.split(/\s+/);
+              
+              // Проверяем, содержит ли название запрос как подстроку
+              if (nameLower.includes(singleTerm)) return true;
+              
+              // Проверяем, начинается ли любое слово в названии с запроса
+              if (nameWords.some(word => word.startsWith(singleTerm))) return true;
+              
+              // Проверяем, начинается ли название с запроса
+              if (nameLower.startsWith(singleTerm)) return true;
+              
+              return false;
             });
             
             for (const game of filteredGames) {
@@ -480,25 +493,53 @@ app.get('/search', async (req, res) => {
       }
     }
     
-    // Сортируем результаты по релевантности
+    // Фильтруем результаты - оставляем только те, которые действительно подходят под запрос
     const queryLower = searchQuery.toLowerCase();
-    const gamesWithScore = allGames.map(game => {
+    const filteredGames = allGames.filter(game => {
       const nameLower = (game.name || '').toLowerCase();
+      const nameWords = nameLower.split(/\s+/);
+      
+      // Игра подходит, если:
+      // 1. Название содержит запрос как подстроку
+      if (nameLower.includes(queryLower)) return true;
+      
+      // 2. Любое слово в названии начинается с запроса
+      if (nameWords.some(word => word.startsWith(queryLower))) return true;
+      
+      // 3. Название начинается с запроса
+      if (nameLower.startsWith(queryLower)) return true;
+      
+      // 4. Для многословных запросов - все слова должны присутствовать
+      if (searchTerms.length > 1) {
+        const allTermsMatch = searchTerms.every(term => 
+          nameLower.includes(term) || nameWords.some(word => word.startsWith(term))
+        );
+        if (allTermsMatch) return true;
+      }
+      
+      return false;
+    });
+    
+    // Сортируем результаты по релевантности
+    const gamesWithScore = filteredGames.map(game => {
+      const nameLower = (game.name || '').toLowerCase();
+      const nameWords = nameLower.split(/\s+/);
       let score = 0;
       
       // Бонус за точное совпадение названия
       if (nameLower === queryLower) score += 100;
       // Бонус за начало названия с запросом (самый важный для частичного поиска)
       else if (nameLower.startsWith(queryLower)) score += 80;
-      // Бонус за начало названия с запросом (только начало первого слова)
-      else if (nameLower.split(/\s+/).some(word => word.startsWith(queryLower))) score += 60;
+      // Бонус за начало любого слова в названии с запросом
+      else if (nameWords.some(word => word.startsWith(queryLower))) score += 70;
       // Бонус за содержание запроса в названии
-      else if (nameLower.includes(queryLower)) score += 30;
+      else if (nameLower.includes(queryLower)) score += 50;
       
       // Бонус за количество совпадающих слов в названии
-      const nameWords = nameLower.split(/\s+/);
-      const matchedWords = searchTerms.filter(term => nameWords.some(w => w.includes(term.toLowerCase())));
-      score += matchedWords.length * 5;
+      const matchedWords = searchTerms.filter(term => 
+        nameLower.includes(term) || nameWords.some(w => w.startsWith(term))
+      );
+      score += matchedWords.length * 10;
       
       // Бонус за рейтинг (игры с рейтингом выше получают небольшой бонус)
       if (game.aggregated_rating) score += game.aggregated_rating / 10;
