@@ -377,15 +377,152 @@ app.get('/search', async (req, res) => {
   const q = req.query.query;
   const limit = parseInt(req.query.limit) || 10;
   if (!q) return res.status(400).json({ error: 'Query required' });
-  const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${q}"; limit ${limit};`;
+
+  const searchQuery = q.trim();
+  // Разбиваем на слова и фильтруем только очень короткие слова (меньше 2 символов)
+  const searchTerms = searchQuery.toLowerCase().split(/\s+/).filter(term => term.length > 1);
+  
   try {
-    const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
-    const games = await Promise.all(r.data.map(processSearchGame));
-    res.json(games);
+    // Делаем несколько запросов для более гибкого поиска (как в newsTPV)
+    const searchQueries = [];
+    
+    // 1. Основной запрос с полным текстом
+    searchQueries.push(searchQuery);
+    
+    // 2. Если запрос содержит несколько слов, добавляем запросы для отдельных слов
+    if (searchTerms.length > 1) {
+      // Добавляем запросы для основных слов (игнорируя короткие слова типа "of")
+      const mainTerms = searchTerms.filter(term => term.length > 2);
+      if (mainTerms.length > 0) {
+        // Добавляем самое длинное слово для более широкого поиска
+        const longestTerm = mainTerms.reduce((a, b) => a.length > b.length ? a : b);
+        if (longestTerm !== searchQuery.toLowerCase()) {
+          searchQueries.push(longestTerm);
+        }
+      }
+    }
+    
+    // Выполняем запросы параллельно для лучшей производительности
+    const requests = searchQueries.map(query => {
+      const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${query}"; limit ${Math.max(limit * 2, 50)};`;
+      return axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 })
+        .catch(err => {
+          console.error(`Search query "${query}" error:`, err.message);
+          return { data: [] }; // Возвращаем пустой результат при ошибке
+        });
+    });
+    
+    const responses = await Promise.all(requests);
+    
+    // Объединяем результаты из всех запросов
+    const allGames = [];
+    const gamesMap = new Map(); // Для дедупликации по ID
+    
+    for (const response of responses) {
+      if (response.data && Array.isArray(response.data)) {
+        for (const game of response.data) {
+          if (!gamesMap.has(game.id)) {
+            gamesMap.set(game.id, game);
+            allGames.push(game);
+          }
+        }
+      }
+    }
+    
+    // Сортируем результаты по релевантности
+    const queryLower = searchQuery.toLowerCase();
+    const gamesWithScore = allGames.map(game => {
+      const nameLower = (game.name || '').toLowerCase();
+      let score = 0;
+      
+      // Бонус за точное совпадение названия
+      if (nameLower === queryLower) score += 100;
+      // Бонус за начало названия с запросом
+      else if (nameLower.startsWith(queryLower)) score += 50;
+      // Бонус за содержание запроса в названии
+      else if (nameLower.includes(queryLower)) score += 30;
+      
+      // Бонус за количество совпадающих слов в названии
+      const nameWords = nameLower.split(/\s+/);
+      const matchedWords = searchTerms.filter(term => nameWords.some(w => w.includes(term.toLowerCase())));
+      score += matchedWords.length * 5;
+      
+      // Бонус за рейтинг (игры с рейтингом выше получают небольшой бонус)
+      if (game.aggregated_rating) score += game.aggregated_rating / 10;
+      
+      return { ...game, _relevanceScore: score };
+    });
+    
+    // Сортируем по релевантности, затем по рейтингу
+    gamesWithScore.sort((a, b) => {
+      if (b._relevanceScore !== a._relevanceScore) {
+        return b._relevanceScore - a._relevanceScore;
+      }
+      // Если релевантность одинаковая, сортируем по рейтингу
+      const aRating = a.aggregated_rating || a.rating || 0;
+      const bRating = b.aggregated_rating || b.rating || 0;
+      return bRating - aRating;
+    });
+    
+    // Берем топ результатов и обрабатываем их
+    const topGames = gamesWithScore.slice(0, limit * 2).map(({ _relevanceScore, ...game }) => game);
+    
+    // Обрабатываем игры через processSearchGame
+    const processedGames = await Promise.all(topGames.map(processSearchGame));
+    
+    // Вычисляем релевантность на основе обработанных данных
+    const gamesWithRelevance = processedGames.map(game => {
+      const nameLower = (game.name || '').toLowerCase();
+      let score = 0;
+      
+      // Бонус за точное совпадение названия
+      if (nameLower === queryLower) score += 100;
+      // Бонус за начало названия с запросом
+      else if (nameLower.startsWith(queryLower)) score += 50;
+      // Бонус за содержание запроса в названии
+      else if (nameLower.includes(queryLower)) score += 30;
+      
+      // Бонус за количество совпадающих слов в названии
+      const nameWords = nameLower.split(/\s+/);
+      const matchedWords = searchTerms.filter(term => nameWords.some(w => w.includes(term.toLowerCase())));
+      score += matchedWords.length * 5;
+      
+      // Бонус за рейтинг
+      const rating = typeof game.rating === 'number' ? game.rating : 0;
+      score += rating / 10;
+      
+      return { ...game, _relevanceScore: score };
+    });
+    
+    // Сортируем по релевантности, затем по рейтингу
+    gamesWithRelevance.sort((a, b) => {
+      if (b._relevanceScore !== a._relevanceScore) {
+        return b._relevanceScore - a._relevanceScore;
+      }
+      const aRating = typeof a.rating === 'number' ? a.rating : 0;
+      const bRating = typeof b.rating === 'number' ? b.rating : 0;
+      return bRating - aRating;
+    });
+    
+    // Убираем временное поле score и возвращаем нужное количество
+    const finalGames = gamesWithRelevance
+      .slice(0, limit)
+      .map(({ _relevanceScore, ...game }) => game);
+    
+    res.json(finalGames);
   } catch (err) {
     console.error('/search ERROR:', err.message, err.response?.status, err.response?.data);
     if (err.response?.status === 401) {
-      try { await refreshAccessToken(); } catch(e){/* ignore */ }
+      try { 
+        await refreshAccessToken(); 
+        // Пробуем повторить запрос после обновления токена
+        const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${searchQuery}"; limit ${limit};`;
+        const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+        const games = await Promise.all(r.data.map(processSearchGame));
+        return res.json(games);
+      } catch(e) {
+        console.error('Retry after token refresh failed:', e.message);
+      }
     }
     res.status(500).json({ error: 'IGDB error' });
   }
