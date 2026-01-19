@@ -403,27 +403,21 @@ app.get('/search', async (req, res) => {
     } else if (searchTerms.length === 1) {
       // Если запрос состоит из одного слова, добавляем поиск по частичному совпадению
       const singleTerm = searchTerms[0];
-      // Если запрос длиннее 3 символов, делаем дополнительные запросы для частичного поиска
-      if (singleTerm.length >= 3) {
-        // Пробуем найти игры, где название начинается с запроса (усекаем запрос если нужно)
-        // Делаем несколько вариантов поиска:
-        // 1. Первые N символов для поиска более широких результатов
-        // 2. Более длинные варианты запроса
-        
+      // Если запрос длиннее 4 символов, делаем дополнительные запросы для частичного поиска
+      if (singleTerm.length >= 4) {
         // Добавляем поиск по первым символам (для "minecra" ищем игры с "mine" в начале)
-        if (singleTerm.length > 4) {
-          const prefix = singleTerm.substring(0, Math.max(4, Math.floor(singleTerm.length * 0.7)));
-          if (prefix !== singleTerm && prefix.length >= 3) {
-            searchQueries.push(prefix);
-          }
+        // Используем больше символов для более точного поиска (минимум 4)
+        const prefix = singleTerm.substring(0, Math.max(4, Math.floor(singleTerm.length * 0.8)));
+        if (prefix !== singleTerm && prefix.length >= 4) {
+          searchQueries.push(prefix);
         }
-        
       }
     }
     
     // Выполняем запросы параллельно для лучшей производительности
+    // Увеличиваем лимит, чтобы получить больше результатов от IGDB (они сами фильтруют по релевантности)
     const requests = searchQueries.map((query) => {
-      const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${query}"; limit ${Math.max(limit * 2, 50)};`;
+      const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${query}"; limit ${Math.max(limit * 3, 100)};`;
       return axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 })
         .catch(err => {
           console.error(`Search query "${query}" error:`, err.message);
@@ -448,42 +442,47 @@ app.get('/search', async (req, res) => {
       }
     }
     
-    // Если основной поиск не дал результатов и запрос состоит из одного слова,
-    // пробуем найти игры, где название начинается с запроса или содержит запрос
-    if (allGames.length === 0 && searchTerms.length === 1) {
+    // Если основной поиск дал мало результатов и запрос состоит из одного слова,
+    // пробуем найти игры через более широкий поиск и фильтруем их
+    if (allGames.length < limit && searchTerms.length === 1) {
       const singleTerm = searchTerms[0].toLowerCase();
       // Делаем дополнительный поиск с первыми символами для частичного совпадения
       if (singleTerm.length >= 4) {
         try {
-          // Используем более длинный префикс для более точного поиска
-          const prefixQuery = singleTerm.substring(0, Math.max(4, Math.floor(singleTerm.length * 0.7)));
-          const fallbackBody = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${prefixQuery}"; limit 200;`;
-          const fallbackResponse = await axios.post(igdbUrl, fallbackBody, { headers: igdbHeaders, timeout: 10000 })
-            .catch(() => ({ data: [] }));
+          // Используем префикс для более широкого поиска
+          // Для "minecra" (7 символов) возьмем "mine" (4 символа) или "minec" (5 символов)
+          const prefixQuery = singleTerm.substring(0, Math.max(4, Math.min(5, Math.floor(singleTerm.length * 0.7))));
           
-          if (fallbackResponse.data && Array.isArray(fallbackResponse.data)) {
-            // Строгая фильтрация - ищем игры, где название содержит запрос как подстроку
-            // или начинается с запроса, или любое слово в названии начинается с запроса
-            const filteredGames = fallbackResponse.data.filter(game => {
-              const nameLower = (game.name || '').toLowerCase();
-              const nameWords = nameLower.split(/\s+/);
-              
-              // Проверяем, содержит ли название запрос как подстроку
-              if (nameLower.includes(singleTerm)) return true;
-              
-              // Проверяем, начинается ли любое слово в названии с запроса
-              if (nameWords.some(word => word.startsWith(singleTerm))) return true;
-              
-              // Проверяем, начинается ли название с запроса
-              if (nameLower.startsWith(singleTerm)) return true;
-              
-              return false;
-            });
+          // Проверяем, не делали ли мы уже этот запрос
+          if (!searchQueries.includes(prefixQuery)) {
+            const fallbackBody = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${prefixQuery}"; limit 300;`;
+            const fallbackResponse = await axios.post(igdbUrl, fallbackBody, { headers: igdbHeaders, timeout: 10000 })
+              .catch(() => ({ data: [] }));
             
-            for (const game of filteredGames) {
-              if (!gamesMap.has(game.id)) {
-                gamesMap.set(game.id, game);
-                allGames.push(game);
+            if (fallbackResponse.data && Array.isArray(fallbackResponse.data)) {
+              // Строгая фильтрация - ищем игры, где название содержит запрос как подстроку
+              // Это позволит "minecra" найти "minecraft"
+              const filteredGames = fallbackResponse.data.filter(game => {
+                const nameLower = (game.name || '').toLowerCase();
+                const nameWords = nameLower.split(/\s+/);
+                
+                // Проверяем, содержит ли название запрос как подстроку (важно для "minecra" -> "minecraft")
+                if (nameLower.includes(singleTerm)) return true;
+                
+                // Проверяем, начинается ли любое слово в названии с запроса
+                if (nameWords.some(word => word.startsWith(singleTerm))) return true;
+                
+                // Проверяем, начинается ли название с запроса
+                if (nameLower.startsWith(singleTerm)) return true;
+                
+                return false;
+              });
+              
+              for (const game of filteredGames) {
+                if (!gamesMap.has(game.id)) {
+                  gamesMap.set(game.id, game);
+                  allGames.push(game);
+                }
               }
             }
           }
@@ -493,28 +492,31 @@ app.get('/search', async (req, res) => {
       }
     }
     
-    // Фильтруем результаты - оставляем только те, которые действительно подходят под запрос
+    // IGDB сам возвращает релевантные результаты, но дополнительно фильтруем для точности
+    // Оставляем игры, которые хотя бы частично соответствуют запросу
     const queryLower = searchQuery.toLowerCase();
     const filteredGames = allGames.filter(game => {
       const nameLower = (game.name || '').toLowerCase();
       const nameWords = nameLower.split(/\s+/);
       
       // Игра подходит, если:
-      // 1. Название содержит запрос как подстроку
+      // 1. Название содержит запрос как подстроку (самое важное для частичного поиска)
+      // Это позволит "minecra" найти "minecraft"
       if (nameLower.includes(queryLower)) return true;
       
-      // 2. Любое слово в названии начинается с запроса
+      // 2. Любое слово в названии начинается с запроса (важно для "minecra" -> "minecraft")
       if (nameWords.some(word => word.startsWith(queryLower))) return true;
       
       // 3. Название начинается с запроса
       if (nameLower.startsWith(queryLower)) return true;
       
-      // 4. Для многословных запросов - все слова должны присутствовать
+      // 4. Для многословных запросов - хотя бы одно слово должно совпадать
       if (searchTerms.length > 1) {
-        const allTermsMatch = searchTerms.every(term => 
+        // Проверяем, есть ли хотя бы одно слово, которое совпадает с запросом
+        const hasMatch = searchTerms.some(term => 
           nameLower.includes(term) || nameWords.some(word => word.startsWith(term))
         );
-        if (allTermsMatch) return true;
+        if (hasMatch) return true;
       }
       
       return false;
