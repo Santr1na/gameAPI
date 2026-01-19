@@ -400,10 +400,29 @@ app.get('/search', async (req, res) => {
           searchQueries.push(longestTerm);
         }
       }
+    } else if (searchTerms.length === 1) {
+      // Если запрос состоит из одного слова, добавляем поиск по частичному совпадению
+      const singleTerm = searchTerms[0];
+      // Если запрос длиннее 3 символов, делаем дополнительные запросы для частичного поиска
+      if (singleTerm.length >= 3) {
+        // Пробуем найти игры, где название начинается с запроса (усекаем запрос если нужно)
+        // Делаем несколько вариантов поиска:
+        // 1. Первые N символов для поиска более широких результатов
+        // 2. Более длинные варианты запроса
+        
+        // Добавляем поиск по первым символам (для "minecra" ищем игры с "mine" в начале)
+        if (singleTerm.length > 4) {
+          const prefix = singleTerm.substring(0, Math.max(4, Math.floor(singleTerm.length * 0.7)));
+          if (prefix !== singleTerm && prefix.length >= 3) {
+            searchQueries.push(prefix);
+          }
+        }
+        
+      }
     }
     
     // Выполняем запросы параллельно для лучшей производительности
-    const requests = searchQueries.map(query => {
+    const requests = searchQueries.map((query) => {
       const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${query}"; limit ${Math.max(limit * 2, 50)};`;
       return axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 })
         .catch(err => {
@@ -429,6 +448,38 @@ app.get('/search', async (req, res) => {
       }
     }
     
+    // Если основной поиск не дал результатов и запрос состоит из одного слова,
+    // пробуем найти игры, где название начинается с запроса или содержит запрос
+    if (allGames.length === 0 && searchTerms.length === 1) {
+      const singleTerm = searchTerms[0].toLowerCase();
+      // Делаем дополнительный поиск с первыми символами для частичного совпадения
+      if (singleTerm.length >= 4) {
+        try {
+          const prefixQuery = singleTerm.substring(0, Math.max(3, Math.floor(singleTerm.length * 0.6)));
+          const fallbackBody = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${prefixQuery}"; limit 100;`;
+          const fallbackResponse = await axios.post(igdbUrl, fallbackBody, { headers: igdbHeaders, timeout: 10000 })
+            .catch(() => ({ data: [] }));
+          
+          if (fallbackResponse.data && Array.isArray(fallbackResponse.data)) {
+            // Фильтруем результаты вручную - ищем игры, где название содержит запрос
+            const filteredGames = fallbackResponse.data.filter(game => {
+              const nameLower = (game.name || '').toLowerCase();
+              return nameLower.includes(singleTerm) || singleTerm.includes(nameLower.substring(0, singleTerm.length));
+            });
+            
+            for (const game of filteredGames) {
+              if (!gamesMap.has(game.id)) {
+                gamesMap.set(game.id, game);
+                allGames.push(game);
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Fallback search error:', err.message);
+        }
+      }
+    }
+    
     // Сортируем результаты по релевантности
     const queryLower = searchQuery.toLowerCase();
     const gamesWithScore = allGames.map(game => {
@@ -437,8 +488,10 @@ app.get('/search', async (req, res) => {
       
       // Бонус за точное совпадение названия
       if (nameLower === queryLower) score += 100;
-      // Бонус за начало названия с запросом
-      else if (nameLower.startsWith(queryLower)) score += 50;
+      // Бонус за начало названия с запросом (самый важный для частичного поиска)
+      else if (nameLower.startsWith(queryLower)) score += 80;
+      // Бонус за начало названия с запросом (только начало первого слова)
+      else if (nameLower.split(/\s+/).some(word => word.startsWith(queryLower))) score += 60;
       // Бонус за содержание запроса в названии
       else if (nameLower.includes(queryLower)) score += 30;
       
