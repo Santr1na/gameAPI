@@ -46,8 +46,10 @@ if (!admin.apps.length) {
     process.exit(1);
   }
 }
-// Firestore не используется - счетчики хранятся в памяти
-// const db = admin.firestore(); // Убрано - не нужен для счетчиков
+// Firestore для личных избранных игр (рекомендации)
+function getDb() {
+  return admin.firestore();
+}
 
 // Test Firebase Auth connection on startup (только для проверки токенов пользователей)
 // Firestore проверяется при первом использовании, не блокирует запуск
@@ -222,6 +224,45 @@ function resetAllStatusCounts(gameId) {
   statusCounts[gameId] = statusCounts[gameIdStr];
   return statusCounts[gameIdStr];
 }
+
+// -------- Личные избранные в Firestore (для рекомендаций) --------
+async function addUserFavorite(uid, gameId) {
+  try {
+    const db = getDb();
+    const gameIdStr = String(gameId);
+    await db.collection('users').doc(uid).collection('favorites').doc(gameIdStr).set({
+      gameId: gameIdStr,
+      addedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    return true;
+  } catch (err) {
+    console.error('[addUserFavorite]', err.message);
+    return false;
+  }
+}
+
+async function removeUserFavorite(uid, gameId) {
+  try {
+    const db = getDb();
+    await db.collection('users').doc(uid).collection('favorites').doc(String(gameId)).delete();
+    return true;
+  } catch (err) {
+    console.error('[removeUserFavorite]', err.message);
+    return false;
+  }
+}
+
+async function getUserFavoriteGameIds(uid) {
+  try {
+    const db = getDb();
+    const snap = await db.collection('users').doc(uid).collection('favorites').get();
+    return snap.docs.map(d => String(d.data().gameId || d.id));
+  } catch (err) {
+    console.error('[getUserFavoriteGameIds]', err.message);
+    return [];
+  }
+}
+
 // -------- Utils (covers, history, shuffle) --------
 function weightedShuffle(arr, hist) {
   return arr.map(g => ({ g, w: hist.includes(g.id) ? 0.01 : (Math.random() + 1) }))
@@ -766,11 +807,12 @@ app.get('/games/:id/favorite', authenticate, async (req, res) => {
   }
 });
 
-// POST /games/:id/favorite - увеличить счетчик избранного (+1)
+// POST /games/:id/favorite - увеличить счетчик избранного (+1) и сохранить в Firestore для рекомендаций
 app.post('/games/:id/favorite', authenticate, async (req, res) => {
   try {
     const gameId = req.params.id;
     const newCount = updateFavoriteCount(gameId, 1);
+    await addUserFavorite(req.user.uid, gameId);
     console.log(`[POST /games/${gameId}/favorite] Favorite count: ${newCount}`);
     res.json({ favorite: newCount });
   } catch (error) {
@@ -779,11 +821,12 @@ app.post('/games/:id/favorite', authenticate, async (req, res) => {
   }
 });
 
-// DELETE /games/:id/favorite - уменьшить счетчик избранного (-1)
+// DELETE /games/:id/favorite - уменьшить счетчик избранного (-1) и удалить из Firestore
 app.delete('/games/:id/favorite', authenticate, async (req, res) => {
   try {
     const gameId = req.params.id;
     const newCount = updateFavoriteCount(gameId, -1);
+    await removeUserFavorite(req.user.uid, gameId);
     console.log(`[DELETE /games/${gameId}/favorite] Favorite count: ${newCount}`);
     res.json({ favorite: newCount });
   } catch (error) {
@@ -838,6 +881,77 @@ app.delete('/games/:id/status', authenticate, async (req, res) => {
   } catch (error) {
     console.error(`Error /games/:id/status (DELETE):`, error.message);
     res.status(500).json({ error: 'Failed to reset statuses: ' + error.message });
+  }
+});
+
+// -------- Личные рекомендации --------
+// GET /recommendations - игры, похожие на избранное пользователя (требует Authorization)
+app.get('/recommendations', authenticate, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 15, 30);
+  const userId = req.user.uid;
+
+  try {
+    const favoriteIds = await getUserFavoriteGameIds(userId);
+    const favoriteSet = new Set(favoriteIds.map(String));
+
+    // Нет избранного — возвращаем популярные игры как fallback
+    if (favoriteIds.length === 0) {
+      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit};`;
+      const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+      const games = await Promise.all(r.data.map(processPopularGame));
+      return res.json({ source: 'popular', games });
+    }
+
+    // Запрос similar_games по каждому избранному (до 10 игр)
+    const idsToQuery = favoriteIds.slice(0, 10);
+    const multiBody = idsToQuery
+      .map(id => `fields similar_games.id; where id = ${id}; limit 1;`)
+      .join('\n');
+
+    const responses = await axios.post(igdbUrl, multiBody, { headers: igdbHeaders, timeout: 15000 });
+    const results = Array.isArray(responses.data[0]) ? responses.data : [responses.data];
+
+    const similarCount = {};
+    for (const arr of results) {
+      if (!Array.isArray(arr)) continue;
+      for (const game of arr) {
+        const similar = game.similar_games || [];
+        for (const s of similar) {
+          if (s && s.id && !favoriteSet.has(String(s.id))) {
+            similarCount[s.id] = (similarCount[s.id] || 0) + 1;
+          }
+        }
+      }
+    }
+
+    const recommendedIds = Object.entries(similarCount)
+      .sort((a, b) => b[1] - a[1])
+      .map(([id]) => id)
+      .slice(0, limit);
+
+    if (recommendedIds.length === 0) {
+      // Похожих не нашли — fallback на популярные
+      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit};`;
+      const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+      const games = await Promise.all(r.data.map(processPopularGame));
+      return res.json({ source: 'popular', games });
+    }
+
+    const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where id = (${recommendedIds.join(',')});`;
+    const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+    const orderMap = new Map(recommendedIds.map((id, i) => [String(id), i]));
+    const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
+    const games = await Promise.all(sorted.map(processPopularGame));
+
+    res.json({ source: 'similar', games });
+  } catch (err) {
+    console.error('/recommendations ERROR:', err.message, err.response?.status);
+    if (err.response?.status === 401) {
+      try {
+        await refreshAccessToken();
+      } catch (e) { /* ignore */ }
+    }
+    res.status(500).json({ error: 'Recommendations error' });
   }
 });
 
