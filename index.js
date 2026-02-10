@@ -279,6 +279,15 @@ function weightedShuffle(arr, hist) {
   return arr.map(g => ({ g, w: hist.includes(g.id) ? 0.01 : (Math.random() + 1) }))
     .sort((a, b) => b.w - a.w).map(i => i.g);
 }
+// Fisher–Yates shuffle — чтобы при каждом обновлении кэша выдавались разные игры
+function shuffleArray(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 function updateHistory(ids) {
   let h = historyCache.get(historyKey) || [];
   h = [...new Set([...ids, ...h])].slice(0, 200);
@@ -930,7 +939,9 @@ async function getDiverseRecommendationIds() {
   const results = await Promise.all(requests);
   const seen = new Set();
   const orderedIds = [];
-  for (const { data } of results) {
+  // Перемешиваем порядок жанров при слиянии, чтобы не всегда было Action → Shooter → RPG…
+  const shuffledResults = shuffleArray(results);
+  for (const { data } of shuffledResults) {
     if (orderedIds.length >= MAX_DIVERSE_POOL) break;
     for (const g of data) {
       if (g.id && !seen.has(g.id)) {
@@ -939,10 +950,11 @@ async function getDiverseRecommendationIds() {
       }
     }
   }
-  if (orderedIds.length > 0) {
-    cache.set(cacheKey, orderedIds, RECOMMENDATIONS_DIVERSE_CACHE_TTL);
+  const shuffledIds = shuffleArray(orderedIds);
+  if (shuffledIds.length > 0) {
+    cache.set(cacheKey, shuffledIds, RECOMMENDATIONS_DIVERSE_CACHE_TTL);
   }
-  return orderedIds;
+  return shuffledIds;
 }
 
 // GET /recommendations?limit=4&page=1 - игры по избранному или подбор по жанрам (рекомендации)
@@ -994,9 +1006,10 @@ app.get('/recommendations', authenticate, async (req, res) => {
           }
         }
       }
-      allRecommendedIds = Object.entries(similarCount)
+      const sorted = Object.entries(similarCount)
         .sort((a, b) => b[1] - a[1])
         .map(([id]) => id);
+      allRecommendedIds = shuffleArray(sorted);
       if (allRecommendedIds.length > 0) {
         cache.set(similarCacheKey, allRecommendedIds, RECOMMENDATIONS_SIMILAR_CACHE_TTL);
       }
