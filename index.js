@@ -163,6 +163,22 @@ async function authenticate(req, res, next) {
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
+
+// Опциональная авторизация: если токен есть и валиден — req.user, иначе req.user = null (для рекомендаций гостям)
+async function optionalAuthenticate(req, res, next) {
+  const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    req.user = null;
+    return next();
+  }
+  const token = authHeader.split('Bearer ')[1];
+  try {
+    req.user = await admin.auth().verifyIdToken(token);
+  } catch (err) {
+    req.user = null;
+  }
+  next();
+}
 // -------- Счетчики избранного в памяти --------
 // Счетчики хранятся в памяти: favoriteCounts[gameId] = количество пользователей
 // При перезапуске сервера счетчики сбрасываются в 0
@@ -945,64 +961,50 @@ app.delete('/games/:id/status', authenticate, async (req, res) => {
 });
 
 // -------- Личные рекомендации (пагинация: limit по умолчанию 4, page) --------
-const RECOMMENDATIONS_DIVERSE_CACHE_TTL = 600;       // 10 мин — кэш списка ID по жанрам
-const RECOMMENDATIONS_SIMILAR_CACHE_TTL = 300;        // 5 мин — кэш похожих ID по пользователю
-const RECOMMENDATION_GENRE_IDS = [4, 5, 12, 31, 15, 8, 32, 10]; // Action, Shooter, RPG, Adventure, Strategy, Platform, Indie, Racing
-const GAMES_PER_GENRE = 12;
-const MAX_DIVERSE_POOL = 80;
+const RECOMMENDATIONS_RANDOM60_CACHE_TTL = 600;      // 10 мин — кэш пула «рейтинг > 60, случайный порядок»
+const RECOMMENDATIONS_SIMILAR_CACHE_TTL = 300;       // 5 мин — кэш похожих ID по пользователю
+const RANDOM_60_POOL_SIZE = 400;                      // сколько игр с рейтингом > 60 держать в пуле
 
-async function getDiverseRecommendationIds() {
-  const cacheKey = 'recommendations_diverse_ids';
+// Для гостей и пользователей без избранного: игры с рейтингом > 60 в случайном порядке
+async function getRandomRating60PlusIds() {
+  const cacheKey = 'recommendations_random_60_ids';
   const cached = cache.get(cacheKey);
   if (cached && Array.isArray(cached) && cached.length > 0) {
     return cached;
   }
   const fields = 'fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name';
-  const requests = RECOMMENDATION_GENRE_IDS.map(genreId => {
-    const body = `${fields}; where genres = (${genreId}); sort aggregated_rating desc; limit ${GAMES_PER_GENRE};`;
-    return axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 8000 }).then(r => ({ genreId, data: r.data || [] })).catch(e => {
-      console.warn('[getDiverseRecommendationIds] genre', genreId, e.message);
-      return { genreId, data: [] };
-    });
-  });
-  const results = await Promise.all(requests);
-  const seen = new Set();
-  const orderedIds = [];
-  // Перемешиваем порядок жанров при слиянии, чтобы не всегда было Action → Shooter → RPG…
-  const shuffledResults = shuffleArray(results);
-  for (const { data } of shuffledResults) {
-    if (orderedIds.length >= MAX_DIVERSE_POOL) break;
-    for (const g of data) {
-      if (g.id && !seen.has(g.id)) {
-        seen.add(g.id);
-        orderedIds.push(g.id);
-      }
+  const body = `${fields}; where aggregated_rating > 60; limit ${RANDOM_60_POOL_SIZE};`;
+  try {
+    const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 15000 });
+    const ids = (r.data || []).map(g => g.id).filter(Boolean);
+    const shuffled = shuffleArray(ids);
+    if (shuffled.length > 0) {
+      cache.set(cacheKey, shuffled, RECOMMENDATIONS_RANDOM60_CACHE_TTL);
     }
+    return shuffled;
+  } catch (e) {
+    console.warn('[getRandomRating60PlusIds]', e.message);
+    return [];
   }
-  const shuffledIds = shuffleArray(orderedIds);
-  if (shuffledIds.length > 0) {
-    cache.set(cacheKey, shuffledIds, RECOMMENDATIONS_DIVERSE_CACHE_TTL);
-  }
-  return shuffledIds;
 }
 
-// GET /recommendations?limit=4&page=1 - игры по избранному или подбор по жанрам (рекомендации)
-app.get('/recommendations', authenticate, async (req, res) => {
+// GET /recommendations?limit=4&page=1 — для авторизованных с избранным: похожие; иначе игры с рейтингом > 60 в случайном порядке
+app.get('/recommendations', optionalAuthenticate, async (req, res) => {
   const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 4), 20);
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const offset = (page - 1) * limit;
-  const userId = req.user.uid;
 
   try {
-    const favoriteIds = await getUserFavoriteGameIds(userId);
+    const userId = req.user ? req.user.uid : null;
+    const favoriteIds = userId ? await getUserFavoriteGameIds(userId) : [];
     const favoriteSet = new Set(favoriteIds.map(String));
 
-    // Нет избранного — рекомендации по разнообразию жанров (не просто «топ популярных»)
-    if (favoriteIds.length === 0) {
-      const allIds = await getDiverseRecommendationIds();
+    // Не зарегистрирован или нет избранного — игры с рейтингом > 60 в случайном порядке
+    if (!userId || favoriteIds.length === 0) {
+      const allIds = await getRandomRating60PlusIds();
       const pageIds = allIds.slice(offset, offset + limit);
       if (pageIds.length === 0) {
-        return res.json({ source: 'diverse', games: [], hasMore: false });
+        return res.json({ source: 'random_60', games: [], hasMore: false });
       }
       const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
       const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
@@ -1010,7 +1012,7 @@ app.get('/recommendations', authenticate, async (req, res) => {
       const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
       const games = await Promise.all(sorted.map(processPopularGame));
       const hasMore = offset + games.length < allIds.length;
-      return res.json({ source: 'diverse', games, hasMore });
+      return res.json({ source: 'random_60', games, hasMore });
     }
 
     // Список похожих ID по пользователю (кэш 5 мин — чтобы пагинация не дергала IGDB заново)
@@ -1047,18 +1049,18 @@ app.get('/recommendations', authenticate, async (req, res) => {
     const pageIds = allRecommendedIds.slice(offset, offset + limit);
 
     if (pageIds.length === 0) {
-      // Нет похожих на этой странице — подбор по жанрам (рекомендации)
-      const allIds = await getDiverseRecommendationIds();
+      // Нет похожих на этой странице — fallback: игры с рейтингом > 60 в случайном порядке
+      const allIds = await getRandomRating60PlusIds();
       const fallbackIds = allIds.slice(offset, offset + limit);
       if (fallbackIds.length === 0) {
-        return res.json({ source: 'diverse', games: [], hasMore: false });
+        return res.json({ source: 'random_60', games: [], hasMore: false });
       }
       const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name; where id = (${fallbackIds.join(',')});`;
       const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
       const orderMap = new Map(fallbackIds.map((id, i) => [String(id), i]));
       const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
       const games = await Promise.all(sorted.map(processPopularGame));
-      return res.json({ source: 'diverse', games, hasMore: offset + games.length < allIds.length });
+      return res.json({ source: 'random_60', games, hasMore: offset + games.length < allIds.length });
     }
 
     const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
