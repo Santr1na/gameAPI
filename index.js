@@ -965,9 +965,9 @@ const RECOMMENDATIONS_RANDOM60_CACHE_TTL = 600;      // 10 мин — кэш п�
 const RECOMMENDATIONS_SIMILAR_CACHE_TTL = 300;       // 5 мин — кэш похожих ID по пользователю
 const RANDOM_60_POOL_SIZE = 400;                      // сколько игр с рейтингом > 60 держать в пуле
 
-// Для гостей и пользователей без избранного: игры с рейтингом > 60 в случайном порядке
-async function getRandomRating60PlusIds() {
-  const cacheKey = 'recommendations_random_60_ids';
+// Пул ID «рейтинг > 60» (без порядка — порядок задаётся при отдаче)
+async function getRandomRating60PoolIds() {
+  const cacheKey = 'recommendations_random_60_pool';
   const cached = cache.get(cacheKey);
   if (cached && Array.isArray(cached) && cached.length > 0) {
     return cached;
@@ -977,15 +977,30 @@ async function getRandomRating60PlusIds() {
   try {
     const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 15000 });
     const ids = (r.data || []).map(g => g.id).filter(Boolean);
-    const shuffled = shuffleArray(ids);
-    if (shuffled.length > 0) {
-      cache.set(cacheKey, shuffled, RECOMMENDATIONS_RANDOM60_CACHE_TTL);
+    if (ids.length > 0) {
+      cache.set(cacheKey, ids, RECOMMENDATIONS_RANDOM60_CACHE_TTL);
     }
-    return shuffled;
+    return ids;
   } catch (e) {
-    console.warn('[getRandomRating60PlusIds]', e.message);
+    console.warn('[getRandomRating60PoolIds]', e.message);
     return [];
   }
+}
+
+// Для гостей и пользователей без избранного: порядок перемешан (при чтении из кэша тоже перемешиваем)
+async function getRandomRating60PlusIds(userId) {
+  const pool = await getRandomRating60PoolIds();
+  if (pool.length === 0) return [];
+  if (userId) {
+    const orderKey = `recommendations_random_60_order_${userId}`;
+    let order = cache.get(orderKey);
+    if (!order || !Array.isArray(order)) {
+      order = shuffleArray(pool);
+      cache.set(orderKey, order, RECOMMENDATIONS_RANDOM60_CACHE_TTL);
+    }
+    return order;
+  }
+  return shuffleArray(pool);
 }
 
 // GET /recommendations?limit=4&page=1 — для авторизованных с избранным: похожие; иначе игры с рейтингом > 60 в случайном порядке
@@ -1001,7 +1016,7 @@ app.get('/recommendations', optionalAuthenticate, async (req, res) => {
 
     // Не зарегистрирован или нет избранного — игры с рейтингом > 60 в случайном порядке
     if (!userId || favoriteIds.length === 0) {
-      const allIds = await getRandomRating60PlusIds();
+      const allIds = await getRandomRating60PlusIds(userId);
       const pageIds = allIds.slice(offset, offset + limit);
       if (pageIds.length === 0) {
         return res.json({ source: 'random_60', games: [], hasMore: false });
@@ -1050,7 +1065,7 @@ app.get('/recommendations', optionalAuthenticate, async (req, res) => {
 
     if (pageIds.length === 0) {
       // Нет похожих на этой странице — fallback: игры с рейтингом > 60 в случайном порядке
-      const allIds = await getRandomRating60PlusIds();
+      const allIds = await getRandomRating60PlusIds(userId);
       const fallbackIds = allIds.slice(offset, offset + limit);
       if (fallbackIds.length === 0) {
         return res.json({ source: 'random_60', games: [], hasMore: false });
