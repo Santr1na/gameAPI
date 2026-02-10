@@ -317,6 +317,17 @@ async function processSearchGame(g) {
     main_genre: g.genres?.[0]?.name || 'N/A'
   };
 }
+// Показываем рейтинг только при достаточном числе оценок (иначе у малозначимых игр бывает 100)
+const MIN_RATING_COUNT_TO_SHOW = 5;
+
+function formatCriticRating(g) {
+  const rating = g.aggregated_rating;
+  const count = g.aggregated_rating_count ?? 0;
+  if (rating == null || count < MIN_RATING_COUNT_TO_SHOW) return 'N/A';
+  const n = Math.round(rating);
+  return n === 0 ? 'N/A' : n;
+}
+
 async function processPopularGame(g) {
   const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
   const plats = g.platforms ? g.platforms.map(p => p.name) : [];
@@ -324,7 +335,7 @@ async function processPopularGame(g) {
     id: g.id,
     name: g.name,
     cover_image: await getGameCover(g.name, plats, cover),
-    critic_rating: Math.round(g.aggregated_rating || 0) || 'N/A',
+    critic_rating: formatCriticRating(g),
     release_year: g.release_dates?.[0]?.date ? new Date(g.release_dates[0].date * 1000).getFullYear() : 'N/A',
     main_genre: g.genres?.[0]?.name || 'N/A',
     platforms: plats
@@ -352,7 +363,7 @@ async function processGame(g) {
         id: s.id,
         name: s.name,
         cover_image: await getGameCover(s.name, sp, sc),
-        critic_rating: Math.round(s.aggregated_rating || 0) || 'N/A',
+        critic_rating: formatCriticRating(s),
         release_year: s.release_dates?.[0]?.date ? new Date(s.release_dates[0].date * 1000).getFullYear() : 'N/A',
         main_genre: s.genres?.[0]?.name || 'N/A',
         platforms: sp
@@ -908,7 +919,7 @@ async function getDiverseRecommendationIds() {
   if (cached && Array.isArray(cached) && cached.length > 0) {
     return cached;
   }
-  const fields = 'fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name';
+  const fields = 'fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name';
   const requests = RECOMMENDATION_GENRE_IDS.map(genreId => {
     const body = `${fields}; where genres = (${genreId}); sort aggregated_rating desc; limit ${GAMES_PER_GENRE};`;
     return axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 8000 }).then(r => ({ genreId, data: r.data || [] })).catch(e => {
@@ -952,7 +963,7 @@ app.get('/recommendations', authenticate, async (req, res) => {
       if (pageIds.length === 0) {
         return res.json({ source: 'diverse', games: [], hasMore: false });
       }
-      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
+      const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
       const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
       const orderMap = new Map(pageIds.map((id, i) => [String(id), i]));
       const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
@@ -1000,7 +1011,7 @@ app.get('/recommendations', authenticate, async (req, res) => {
       if (fallbackIds.length === 0) {
         return res.json({ source: 'diverse', games: [], hasMore: false });
       }
-      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where id = (${fallbackIds.join(',')});`;
+      const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name; where id = (${fallbackIds.join(',')});`;
       const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
       const orderMap = new Map(fallbackIds.map((id, i) => [String(id), i]));
       const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
@@ -1008,7 +1019,7 @@ app.get('/recommendations', authenticate, async (req, res) => {
       return res.json({ source: 'diverse', games, hasMore: offset + games.length < allIds.length });
     }
 
-    const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
+    const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
     const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
     const orderMap = new Map(pageIds.map((id, i) => [String(id), i]));
     const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
