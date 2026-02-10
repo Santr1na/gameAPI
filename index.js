@@ -234,6 +234,8 @@ async function addUserFavorite(uid, gameId) {
       gameId: gameIdStr,
       addedAt: admin.firestore.FieldValue.serverTimestamp()
     });
+    cache.del(`user_favorites_${uid}`);
+    cache.del(`recommendations_similar_${uid}`);
     return true;
   } catch (err) {
     console.error('[addUserFavorite]', err.message);
@@ -245,6 +247,8 @@ async function removeUserFavorite(uid, gameId) {
   try {
     const db = getDb();
     await db.collection('users').doc(uid).collection('favorites').doc(String(gameId)).delete();
+    cache.del(`user_favorites_${uid}`);
+    cache.del(`recommendations_similar_${uid}`);
     return true;
   } catch (err) {
     console.error('[removeUserFavorite]', err.message);
@@ -252,11 +256,18 @@ async function removeUserFavorite(uid, gameId) {
   }
 }
 
+const USER_FAVORITES_CACHE_TTL = 60; // 1 мин — меньше обращений к Firestore при пагинации
+
 async function getUserFavoriteGameIds(uid) {
+  const cacheKey = `user_favorites_${uid}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Array.isArray(cached)) return cached;
   try {
     const db = getDb();
     const snap = await db.collection('users').doc(uid).collection('favorites').get();
-    return snap.docs.map(d => String(d.data().gameId || d.id));
+    const ids = snap.docs.map(d => String(d.data().gameId || d.id));
+    if (ids.length > 0) cache.set(cacheKey, ids, USER_FAVORITES_CACHE_TTL);
+    return ids;
   } catch (err) {
     console.error('[getUserFavoriteGameIds]', err.message);
     return [];
@@ -885,30 +896,40 @@ app.delete('/games/:id/status', authenticate, async (req, res) => {
 });
 
 // -------- Личные рекомендации (пагинация: limit по умолчанию 4, page) --------
-// Жанры IGDB для подбора «рекомендаций по разнообразию», когда нет избранного
+const RECOMMENDATIONS_DIVERSE_CACHE_TTL = 600;       // 10 мин — кэш списка ID по жанрам
+const RECOMMENDATIONS_SIMILAR_CACHE_TTL = 300;        // 5 мин — кэш похожих ID по пользователю
 const RECOMMENDATION_GENRE_IDS = [4, 5, 12, 31, 15, 8, 32, 10]; // Action, Shooter, RPG, Adventure, Strategy, Platform, Indie, Racing
 const GAMES_PER_GENRE = 12;
 const MAX_DIVERSE_POOL = 80;
 
 async function getDiverseRecommendationIds() {
+  const cacheKey = 'recommendations_diverse_ids';
+  const cached = cache.get(cacheKey);
+  if (cached && Array.isArray(cached) && cached.length > 0) {
+    return cached;
+  }
+  const fields = 'fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name';
+  const requests = RECOMMENDATION_GENRE_IDS.map(genreId => {
+    const body = `${fields}; where genres = (${genreId}); sort aggregated_rating desc; limit ${GAMES_PER_GENRE};`;
+    return axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 8000 }).then(r => ({ genreId, data: r.data || [] })).catch(e => {
+      console.warn('[getDiverseRecommendationIds] genre', genreId, e.message);
+      return { genreId, data: [] };
+    });
+  });
+  const results = await Promise.all(requests);
   const seen = new Set();
   const orderedIds = [];
-  const fields = 'fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name';
-  const baseWhere = 'aggregated_rating >= 75 & aggregated_rating_count > 2';
-  for (const genreId of RECOMMENDATION_GENRE_IDS) {
+  for (const { data } of results) {
     if (orderedIds.length >= MAX_DIVERSE_POOL) break;
-    const body = `${fields}; where genres = (${genreId}) & ${baseWhere}; sort aggregated_rating desc; limit ${GAMES_PER_GENRE};`;
-    try {
-      const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
-      for (const g of r.data || []) {
-        if (g.id && !seen.has(g.id)) {
-          seen.add(g.id);
-          orderedIds.push(g.id);
-        }
+    for (const g of data) {
+      if (g.id && !seen.has(g.id)) {
+        seen.add(g.id);
+        orderedIds.push(g.id);
       }
-    } catch (e) {
-      console.warn('[getDiverseRecommendationIds] genre', genreId, e.message);
     }
+  }
+  if (orderedIds.length > 0) {
+    cache.set(cacheKey, orderedIds, RECOMMENDATIONS_DIVERSE_CACHE_TTL);
   }
   return orderedIds;
 }
@@ -940,31 +961,35 @@ app.get('/recommendations', authenticate, async (req, res) => {
       return res.json({ source: 'diverse', games, hasMore });
     }
 
-    // Собираем много похожих ID по избранному (для пагинации)
-    const idsToQuery = favoriteIds.slice(0, 15);
-    const multiBody = idsToQuery
-      .map(id => `fields similar_games.id; where id = ${id}; limit 1;`)
-      .join('\n');
-
-    const responses = await axios.post(igdbUrl, multiBody, { headers: igdbHeaders, timeout: 15000 });
-    const results = Array.isArray(responses.data[0]) ? responses.data : [responses.data];
-
-    const similarCount = {};
-    for (const arr of results) {
-      if (!Array.isArray(arr)) continue;
-      for (const game of arr) {
-        const similar = game.similar_games || [];
-        for (const s of similar) {
-          if (s && s.id && !favoriteSet.has(String(s.id))) {
-            similarCount[s.id] = (similarCount[s.id] || 0) + 1;
+    // Список похожих ID по пользователю (кэш 5 мин — чтобы пагинация не дергала IGDB заново)
+    const similarCacheKey = `recommendations_similar_${userId}`;
+    let allRecommendedIds = cache.get(similarCacheKey);
+    if (!allRecommendedIds || !Array.isArray(allRecommendedIds)) {
+      const idsToQuery = favoriteIds.slice(0, 15);
+      const multiBody = idsToQuery
+        .map(id => `fields similar_games.id; where id = ${id}; limit 1;`)
+        .join('\n');
+      const responses = await axios.post(igdbUrl, multiBody, { headers: igdbHeaders, timeout: 12000 });
+      const results = Array.isArray(responses.data[0]) ? responses.data : [responses.data];
+      const similarCount = {};
+      for (const arr of results) {
+        if (!Array.isArray(arr)) continue;
+        for (const game of arr) {
+          const similar = game.similar_games || [];
+          for (const s of similar) {
+            if (s && s.id && !favoriteSet.has(String(s.id))) {
+              similarCount[s.id] = (similarCount[s.id] || 0) + 1;
+            }
           }
         }
       }
+      allRecommendedIds = Object.entries(similarCount)
+        .sort((a, b) => b[1] - a[1])
+        .map(([id]) => id);
+      if (allRecommendedIds.length > 0) {
+        cache.set(similarCacheKey, allRecommendedIds, RECOMMENDATIONS_SIMILAR_CACHE_TTL);
+      }
     }
-
-    const allRecommendedIds = Object.entries(similarCount)
-      .sort((a, b) => b[1] - a[1])
-      .map(([id]) => id);
 
     const pageIds = allRecommendedIds.slice(offset, offset + limit);
 
