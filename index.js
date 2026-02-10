@@ -884,26 +884,29 @@ app.delete('/games/:id/status', authenticate, async (req, res) => {
   }
 });
 
-// -------- Личные рекомендации --------
-// GET /recommendations - игры, похожие на избранное пользователя (требует Authorization)
+// -------- Личные рекомендации (пагинация: limit по умолчанию 4, page) --------
+// GET /recommendations?limit=4&page=1 - игры по избранному или популярные
 app.get('/recommendations', authenticate, async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 15, 30);
+  const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 4), 20);
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const offset = (page - 1) * limit;
   const userId = req.user.uid;
 
   try {
     const favoriteIds = await getUserFavoriteGameIds(userId);
     const favoriteSet = new Set(favoriteIds.map(String));
 
-    // Нет избранного — возвращаем популярные игры как fallback
+    // Нет избранного — пагинируем популярные игры
     if (favoriteIds.length === 0) {
-      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit};`;
+      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit}; offset ${offset};`;
       const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
-      const games = await Promise.all(r.data.map(processPopularGame));
-      return res.json({ source: 'popular', games });
+      const games = await Promise.all((r.data || []).map(processPopularGame));
+      const hasMore = games.length >= limit;
+      return res.json({ source: 'popular', games, hasMore });
     }
 
-    // Запрос similar_games по каждому избранному (до 10 игр)
-    const idsToQuery = favoriteIds.slice(0, 10);
+    // Собираем много похожих ID по избранному (для пагинации)
+    const idsToQuery = favoriteIds.slice(0, 15);
     const multiBody = idsToQuery
       .map(id => `fields similar_games.id; where id = ${id}; limit 1;`)
       .join('\n');
@@ -924,26 +927,28 @@ app.get('/recommendations', authenticate, async (req, res) => {
       }
     }
 
-    const recommendedIds = Object.entries(similarCount)
+    const allRecommendedIds = Object.entries(similarCount)
       .sort((a, b) => b[1] - a[1])
-      .map(([id]) => id)
-      .slice(0, limit);
+      .map(([id]) => id);
 
-    if (recommendedIds.length === 0) {
-      // Похожих не нашли — fallback на популярные
-      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit};`;
+    const pageIds = allRecommendedIds.slice(offset, offset + limit);
+
+    if (pageIds.length === 0) {
+      // Нет похожих на этой странице — отдаём страницу популярных
+      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit}; offset ${offset};`;
       const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
-      const games = await Promise.all(r.data.map(processPopularGame));
-      return res.json({ source: 'popular', games });
+      const games = await Promise.all((r.data || []).map(processPopularGame));
+      return res.json({ source: 'popular', games, hasMore: games.length >= limit });
     }
 
-    const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where id = (${recommendedIds.join(',')});`;
+    const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
     const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
-    const orderMap = new Map(recommendedIds.map((id, i) => [String(id), i]));
+    const orderMap = new Map(pageIds.map((id, i) => [String(id), i]));
     const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
     const games = await Promise.all(sorted.map(processPopularGame));
+    const hasMore = offset + games.length < allRecommendedIds.length;
 
-    res.json({ source: 'similar', games });
+    res.json({ source: 'similar', games, hasMore });
   } catch (err) {
     console.error('/recommendations ERROR:', err.message, err.response?.status);
     if (err.response?.status === 401) {
