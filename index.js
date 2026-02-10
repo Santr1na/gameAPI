@@ -885,7 +885,35 @@ app.delete('/games/:id/status', authenticate, async (req, res) => {
 });
 
 // -------- Личные рекомендации (пагинация: limit по умолчанию 4, page) --------
-// GET /recommendations?limit=4&page=1 - игры по избранному или популярные
+// Жанры IGDB для подбора «рекомендаций по разнообразию», когда нет избранного
+const RECOMMENDATION_GENRE_IDS = [4, 5, 12, 31, 15, 8, 32, 10]; // Action, Shooter, RPG, Adventure, Strategy, Platform, Indie, Racing
+const GAMES_PER_GENRE = 12;
+const MAX_DIVERSE_POOL = 80;
+
+async function getDiverseRecommendationIds() {
+  const seen = new Set();
+  const orderedIds = [];
+  const fields = 'fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name';
+  const baseWhere = 'aggregated_rating >= 75 & aggregated_rating_count > 2';
+  for (const genreId of RECOMMENDATION_GENRE_IDS) {
+    if (orderedIds.length >= MAX_DIVERSE_POOL) break;
+    const body = `${fields}; where genres = (${genreId}) & ${baseWhere}; sort aggregated_rating desc; limit ${GAMES_PER_GENRE};`;
+    try {
+      const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+      for (const g of r.data || []) {
+        if (g.id && !seen.has(g.id)) {
+          seen.add(g.id);
+          orderedIds.push(g.id);
+        }
+      }
+    } catch (e) {
+      console.warn('[getDiverseRecommendationIds] genre', genreId, e.message);
+    }
+  }
+  return orderedIds;
+}
+
+// GET /recommendations?limit=4&page=1 - игры по избранному или подбор по жанрам (рекомендации)
 app.get('/recommendations', authenticate, async (req, res) => {
   const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 4), 20);
   const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -896,13 +924,20 @@ app.get('/recommendations', authenticate, async (req, res) => {
     const favoriteIds = await getUserFavoriteGameIds(userId);
     const favoriteSet = new Set(favoriteIds.map(String));
 
-    // Нет избранного — пагинируем популярные игры
+    // Нет избранного — рекомендации по разнообразию жанров (не просто «топ популярных»)
     if (favoriteIds.length === 0) {
-      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit}; offset ${offset};`;
+      const allIds = await getDiverseRecommendationIds();
+      const pageIds = allIds.slice(offset, offset + limit);
+      if (pageIds.length === 0) {
+        return res.json({ source: 'diverse', games: [], hasMore: false });
+      }
+      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
       const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
-      const games = await Promise.all((r.data || []).map(processPopularGame));
-      const hasMore = games.length >= limit;
-      return res.json({ source: 'popular', games, hasMore });
+      const orderMap = new Map(pageIds.map((id, i) => [String(id), i]));
+      const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
+      const games = await Promise.all(sorted.map(processPopularGame));
+      const hasMore = offset + games.length < allIds.length;
+      return res.json({ source: 'diverse', games, hasMore });
     }
 
     // Собираем много похожих ID по избранному (для пагинации)
@@ -934,11 +969,18 @@ app.get('/recommendations', authenticate, async (req, res) => {
     const pageIds = allRecommendedIds.slice(offset, offset + limit);
 
     if (pageIds.length === 0) {
-      // Нет похожих на этой странице — отдаём страницу популярных
-      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit}; offset ${offset};`;
+      // Нет похожих на этой странице — подбор по жанрам (рекомендации)
+      const allIds = await getDiverseRecommendationIds();
+      const fallbackIds = allIds.slice(offset, offset + limit);
+      if (fallbackIds.length === 0) {
+        return res.json({ source: 'diverse', games: [], hasMore: false });
+      }
+      const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where id = (${fallbackIds.join(',')});`;
       const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
-      const games = await Promise.all((r.data || []).map(processPopularGame));
-      return res.json({ source: 'popular', games, hasMore: games.length >= limit });
+      const orderMap = new Map(fallbackIds.map((id, i) => [String(id), i]));
+      const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
+      const games = await Promise.all(sorted.map(processPopularGame));
+      return res.json({ source: 'diverse', games, hasMore: offset + games.length < allIds.length });
     }
 
     const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
