@@ -293,13 +293,36 @@ function updateHistory(ids) {
   h = [...new Set([...ids, ...h])].slice(0, 200);
   historyCache.set(historyKey, h);
 }
+// Заглушка, когда у игры нет обложки в IGDB и Steam — чтобы не показывать пусто/битое
+const DEFAULT_COVER_PLACEHOLDER = 'https://placehold.co/264x352/2c2c2c/9ca3af?text=No+Cover';
+
+function normalizeNameForMatch(name) {
+  if (!name || typeof name !== 'string') return '';
+  return name
+    .toLowerCase()
+    .replace(/\s*[:\-–—]\s*.*$/, '')       // убрать всё после " - " или " : "
+    .replace(/\s*(edition|goty|game of the year|definitive edition|remastered|remaster)\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function getSteamCover(name, plats) {
   if (!plats.includes('Steam')) return null;
   const key = `steam_${name.toLowerCase()}`;
   const cached = cache.get(key);
   if (cached) return cached;
   const apps = await getSteamApps();
-  const app = apps.find(a => a.name.toLowerCase() === name.toLowerCase());
+  if (!apps || !apps.length) return null;
+  const nameLower = name.toLowerCase();
+  const nameNorm = normalizeNameForMatch(name);
+  let app = apps.find(a => a.name && a.name.toLowerCase() === nameLower);
+  if (!app && nameNorm) {
+    app = apps.find(a => a.name && normalizeNameForMatch(a.name) === nameNorm);
+  }
+  if (!app && nameNorm.length > 3) {
+    const firstWords = nameNorm.split(/\s+/).slice(0, 2).join(' ');
+    app = apps.find(a => a.name && normalizeNameForMatch(a.name).startsWith(firstWords));
+  }
   if (app) {
     const url = `https://steamcdn-a.akamaihd.net/steam/apps/${app.appid}/library_600x900.jpg`;
     cache.set(key, url, 86400);
@@ -307,9 +330,15 @@ async function getSteamCover(name, plats) {
   }
   return null;
 }
+
 async function getGameCover(name, plats, igdb) {
   const steam = await getSteamCover(name, plats);
-  return steam || (igdb !== 'N/A' ? igdb.replace('t_thumb', 't_cover_big') : igdb);
+  if (steam) return steam;
+  if (igdb && igdb !== 'N/A') {
+    const url = igdb.replace('t_thumb', 't_cover_big');
+    return url.startsWith('http') ? url : `https:${url}`;
+  }
+  return DEFAULT_COVER_PLACEHOLDER;
 }
 // -------- Processors (transform IGDB responses to our API shape) --------
 async function processSearchGame(g) {
