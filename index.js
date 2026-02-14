@@ -506,6 +506,22 @@ app.get('/search', async (req, res) => {
     // 1. Основной запрос с полным текстом
     searchQueries.push(searchQuery);
     
+    // 1b. Если запрос - известная аббревиатура, добавляем поиск по полному названию (GTA, CS и т.д.)
+    const ABBREV_TO_FULL = {
+      gta: 'grand theft auto',
+      cs: 'counter strike',
+      csgo: 'counter strike',
+      cs2: 'counter strike',
+      nfs: 'need for speed',
+      cod: 'call of duty',
+      ac: 'assassin\'s creed',
+      mhw: 'monster hunter'
+    };
+    const fullForm = ABBREV_TO_FULL[searchQuery.toLowerCase()];
+    if (fullForm && !searchQueries.includes(fullForm)) {
+      searchQueries.push(fullForm);
+    }
+    
     // 2. Если запрос содержит несколько слов, добавляем запросы для отдельных слов
     if (searchTerms.length > 1) {
       // Добавляем запросы для основных слов (игнорируя короткие слова типа "of")
@@ -629,6 +645,22 @@ app.get('/search', async (req, res) => {
     // IGDB сам возвращает релевантные результаты, но дополнительно фильтруем для точности
     // Оставляем игры, которые хотя бы частично соответствуют запросу
     const queryLower = searchQuery.toLowerCase();
+    // Популярные аббревиатуры -> полные названия (IGDB находит по alternative_names, но локальный фильтр проверяет только main name)
+    const ABBREVIATIONS = {
+      gta: ['grand theft auto'],
+      cs: ['counter-strike', 'counter strike'],
+      csgo: ['counter-strike', 'counter strike'],
+      cs2: ['counter-strike', 'counter strike'],
+      nfs: ['need for speed'],
+      ac: ['assassin\'s creed', 'assassins creed'],
+      cod: ['call of duty'],
+      fifa: ['fifa'],
+      lol: ['league of legends'],
+      wow: ['world of warcraft'],
+      pokemon: ['pokemon', 'pokémon'],
+      tekken: ['tekken'],
+      mhw: ['monster hunter']
+    };
     const filteredGames = allGames.filter(game => {
       const nameLower = (game.name || '').toLowerCase();
       const nameWords = nameLower.split(/\s+/);
@@ -644,7 +676,11 @@ app.get('/search', async (req, res) => {
       // 3. Название начинается с запроса
       if (nameLower.startsWith(queryLower)) return true;
       
-      // 4. Для многословных запросов - хотя бы одно слово должно совпадать
+      // 4. Запрос - известная аббревиатура и название содержит полную форму (GTA -> Grand Theft Auto)
+      const expansions = ABBREVIATIONS[queryLower];
+      if (expansions && expansions.some(exp => nameLower.includes(exp))) return true;
+      
+      // 5. Для многословных запросов - хотя бы одно слово должно совпадать
       if (searchTerms.length > 1) {
         // Проверяем, есть ли хотя бы одно слово, которое совпадает с запросом
         const hasMatch = searchTerms.some(term => 
