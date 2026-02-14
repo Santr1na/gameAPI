@@ -567,7 +567,7 @@ app.get('/search', async (req, res) => {
     // Выполняем запросы параллельно для лучшей производительности
     // Увеличиваем лимит, чтобы получить больше результатов от IGDB (они сами фильтруют по релевантности)
     const requests = searchQueries.map((query) => {
-      const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${query}"; limit ${Math.max(limit * 3, 100)};`;
+      const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,rating,rating_count,summary,platforms.name,release_dates.date,genres.name; search "${query}"; limit ${Math.max(limit * 3, 100)};`;
       return axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 })
         .catch(err => {
           console.error(`Search query "${query}" error:`, err.message);
@@ -605,7 +605,7 @@ app.get('/search', async (req, res) => {
           
           // Проверяем, не делали ли мы уже этот запрос
           if (!searchQueries.includes(prefixQuery)) {
-            const fallbackBody = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${prefixQuery}"; limit 500;`;
+            const fallbackBody = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,rating,rating_count,summary,platforms.name,release_dates.date,genres.name; search "${prefixQuery}"; limit 500;`;
             const fallbackResponse = await axios.post(igdbUrl, fallbackBody, { headers: igdbHeaders, timeout: 10000 })
               .catch(() => ({ data: [] }));
             
@@ -692,11 +692,28 @@ app.get('/search', async (req, res) => {
       return false;
     });
     
-    // Сортируем результаты по релевантности
+    // Сортируем результаты по релевантности (основные игры серии выше модов/фанатских)
     const gamesWithScore = filteredGames.map(game => {
       const nameLower = (game.name || '').toLowerCase();
       const nameWords = nameLower.split(/\s+/);
       let score = 0;
+      
+      // Популярность: больше оценок = более известная игра (GTA 5 vs моды)
+      const ratingCount = game.aggregated_rating_count ?? game.rating_count ?? 0;
+      score += Math.min(ratingCount / 50, 60); // до +60 за популярность
+      
+      // Штраф за длинные названия (моды/фанатские: "Super Mario 64 in GTA San Andreas")
+      if (nameWords.length > 5) score -= 40;
+      else if (nameWords.length > 4) score -= 20;
+      
+      // Аббревиатура: название НАЧИНАЕТСЯ с франшизы = основная игра серии
+      const expansions = ABBREVIATIONS[queryLower];
+      if (expansions) {
+        const startsWithFranchise = expansions.some(exp => nameLower.startsWith(exp));
+        const containsButNotStart = expansions.some(exp => nameLower.includes(exp) && !nameLower.startsWith(exp));
+        if (startsWithFranchise) score += 120;   // GTA V, GTA 6 — главные игры
+        else if (containsButNotStart) score -= 30; // "X in GTA San Andreas" — мод
+      }
       
       // Бонус за точное совпадение названия
       if (nameLower === queryLower) score += 100;
@@ -734,12 +751,15 @@ app.get('/search', async (req, res) => {
       return { ...game, _relevanceScore: score };
     });
     
-    // Сортируем по релевантности, затем по рейтингу
+    // Сортируем по релевантности, затем по популярности (кол-во оценок), затем по рейтингу
     gamesWithScore.sort((a, b) => {
       if (b._relevanceScore !== a._relevanceScore) {
         return b._relevanceScore - a._relevanceScore;
       }
-      // Если релевантность одинаковая, сортируем по рейтингу
+      // Если релевантность одинаковая — по популярности (больше оценок = популярнее)
+      const aCount = a.aggregated_rating_count ?? a.rating_count ?? 0;
+      const bCount = b.aggregated_rating_count ?? b.rating_count ?? 0;
+      if (bCount !== aCount) return bCount - aCount;
       const aRating = a.aggregated_rating || a.rating || 0;
       const bRating = b.aggregated_rating || b.rating || 0;
       return bRating - aRating;
