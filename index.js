@@ -493,6 +493,7 @@ app.get('/search', async (req, res) => {
   console.log('/search requested');
   const q = req.query.query;
   const limit = parseInt(req.query.limit) || 10;
+  const offset = parseInt(req.query.offset) || 0;
   if (!q) return res.status(400).json({ error: 'Query required' });
 
   const searchQuery = q.trim();
@@ -805,12 +806,14 @@ app.get('/search', async (req, res) => {
       return bRating - aRating;
     });
     
-    // Убираем временное поле score и возвращаем нужное количество
+    // Убираем временное поле score, применяем пагинацию
+    const total = gamesWithRelevance.length;
     const finalGames = gamesWithRelevance
-      .slice(0, limit)
+      .slice(offset, offset + limit)
       .map(({ _relevanceScore, ...game }) => game);
+    const hasMore = offset + finalGames.length < total;
     
-    res.json(finalGames);
+    res.json({ data: finalGames, pagination: { hasMore, total, offset } });
   } catch (err) {
     console.error('/search ERROR:', err.message, err.response?.status, err.response?.data);
     if (err.response?.status === 401) {
@@ -820,7 +823,8 @@ app.get('/search', async (req, res) => {
         const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${searchQuery}"; limit ${limit};`;
         const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
         const games = await Promise.all(r.data.map(processSearchGame));
-        return res.json(games);
+        const pageGames = games.slice(offset, offset + limit);
+        return res.json({ data: pageGames, pagination: { hasMore: offset + pageGames.length < games.length, total: games.length, offset } });
       } catch(e) {
         console.error('Retry after token refresh failed:', e.message);
       }
