@@ -129,6 +129,307 @@ cron.schedule('0 0 * * *', async () => {
     console.error('Scheduled token refresh failed:', e.message);
   }
 });
+
+// -------- Недельные топы и подборки (обновляются раз в неделю, опционально с ИИ) --------
+// IGDB genre IDs: 4=Fighting, 5=Shooter, 8=Platform, 9=Puzzle, 10=Racing, 12=RPG, 14=Sport, 15=Strategy, 25=Adventure, 26=Indie, 31=Arcade
+const WEEKLY_TOPS_CACHE_TTL = 86400 * 14; // 2 недели
+const WEEKLY_TOPS_PER_THEME = 10;
+const FALLBACK_WEEKLY_THEMES = [
+  { id: 'rpg', title: 'Лучшие RPG', genreId: 12 },
+  { id: 'action', title: 'Топ экшенов', genreId: 5 },
+  { id: 'indie', title: 'Инди-хиты', genreId: 26 },
+  { id: 'strategy', title: 'Стратегии', genreId: 15 },
+  { id: 'adventure', title: 'Приключения', genreId: 25 }
+];
+
+/** Возвращает понедельник недели для даты YYYY-MM-DD (ключ недели). */
+function getWeekKey(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  const day = d.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setUTCDate(d.getUTCDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+async function getWeeklyThemesFromAI(weekKey) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || !apiKey.trim()) return null;
+  try {
+    const res = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'Ты помощник для подборки игр. Отвечай только валидным JSON-массивом объектов с полями id (латиница), title (название подборки на русском), genreId (число — один из: 4,5,8,9,10,12,14,15,25,26,31). Без комментариев и markdown.'
+          },
+          {
+            role: 'user',
+            content: `Дай 5 тематических подборок на неделю ${weekKey}. Разнообразь жанры (RPG=12, Shooter=5, Indie=26, Strategy=15, Adventure=25, Racing=10, Arcade=31, Puzzle=9, Platform=8, Fighting=4, Sport=14). Пример: [{"id":"rpg","title":"Лучшие RPG недели","genreId":12}]`
+          }
+        ],
+        max_tokens: 400,
+        temperature: 0.7
+      },
+      { headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+    );
+    const text = res.data?.choices?.[0]?.message?.content?.trim() || '';
+    const json = text.replace(/^```\w*\n?|\n?```$/g, '').trim();
+    const themes = JSON.parse(json);
+    if (Array.isArray(themes) && themes.length > 0) {
+      return themes.filter(t => t && Number.isInteger(t.genreId) && t.title);
+    }
+  } catch (e) {
+    console.warn('[getWeeklyThemesFromAI]', e.message);
+  }
+  return null;
+}
+
+async function buildWeeklyTopsForDate(dateStr) {
+  const weekKey = getWeekKey(dateStr);
+  const cacheKey = `weekly_tops_${weekKey}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.tops && cached.tops.length > 0) {
+    return cached;
+  }
+  let themes = await getWeeklyThemesFromAI(weekKey);
+  if (!themes || themes.length === 0) {
+    themes = FALLBACK_WEEKLY_THEMES;
+  }
+  const fields = 'fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name';
+  const tops = [];
+  for (const theme of themes.slice(0, 5)) {
+    const genreId = theme.genreId != null ? theme.genreId : theme.genre;
+    try {
+      const body = `${fields}; where genres = (${genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${WEEKLY_TOPS_PER_THEME};`;
+      const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+      const raw = r.data || [];
+      const games = raw.length ? await Promise.all(raw.map(processPopularGame)) : [];
+      tops.push({
+        id: theme.id || `genre_${genreId}`,
+        title: theme.title || `Топ ${genreId}`,
+        games
+      });
+    } catch (err) {
+      if (err.response && err.response.status === 401) {
+        try {
+          await refreshAccessToken();
+          const body = `${fields}; where genres = (${genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${WEEKLY_TOPS_PER_THEME};`;
+          const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+          const games = (r.data || []).length ? await Promise.all((r.data || []).map(processPopularGame)) : [];
+          tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Топ ${genreId}`, games });
+        } catch (retryErr) {
+          console.warn(`[buildWeeklyTops] theme ${theme.title || genreId} failed:`, retryErr.message);
+          tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Топ ${genreId}`, games: [] });
+        }
+      } else {
+        console.warn(`[buildWeeklyTops] theme ${theme.title || genreId} failed:`, err.message);
+        tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Топ ${genreId}`, games: [] });
+      }
+    }
+  }
+  const result = { date: weekKey, weekStart: weekKey, tops, compilations: tops };
+  cache.set(cacheKey, result, WEEKLY_TOPS_CACHE_TTL);
+  return result;
+}
+
+// Раз в неделю (понедельник 00:05) пересобираем топы
+cron.schedule('5 0 * * 1', async () => {
+  const dateStr = new Date().toISOString().slice(0, 10);
+  console.log('[cron] Building weekly tops for week starting', getWeekKey(dateStr));
+  try {
+    await buildWeeklyTopsForDate(dateStr);
+  } catch (e) {
+    console.error('[cron] Weekly tops build failed:', e.message);
+  }
+});
+
+// -------- Вкладка «Топ игр»: 4 основных (неделя) + 6 неосновных (день), порядок N,M,N,M,N,M,N,M,N,N --------
+const TOPS_FEED_MAIN_CACHE_TTL = 86400 * 14;
+const TOPS_FEED_NON_MAIN_CACHE_TTL = 86400 * 2;
+const TOPS_FEED_PER_BLOCK = 15;
+const fieldsBase = 'fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name';
+
+const MAIN_TOPS = [
+  { id: 'all_time', title: 'Лучшие игры всех времён', type: 'main' },
+  { id: 'new_releases', title: 'Топ новинок', type: 'main' },
+  { id: 'discussed', title: 'Топ обсуждаемых', type: 'main' },
+  { id: 'top_year', title: 'Топ года', type: 'main' }
+];
+
+const GENRES_ROTATION = [
+  { id: 'rpg', title: 'Топ RPG', genreId: 12 },
+  { id: 'shooter', title: 'Топ шутеров', genreId: 5 },
+  { id: 'indie', title: 'Топ инди', genreId: 26 },
+  { id: 'strategy', title: 'Топ стратегий', genreId: 15 },
+  { id: 'adventure', title: 'Топ приключений', genreId: 25 },
+  { id: 'racing', title: 'Топ гонок', genreId: 10 },
+  { id: 'fighting', title: 'Топ файтингов', genreId: 4 },
+  { id: 'platform', title: 'Топ платформеров', genreId: 8 },
+  { id: 'puzzle', title: 'Топ головоломок', genreId: 9 },
+  { id: 'sport', title: 'Топ спортивных', genreId: 14 },
+  { id: 'arcade', title: 'Топ аркад', genreId: 31 }
+];
+
+const THEMES_ROTATION = [
+  { id: 'prison', title: 'Топ игр про тюрьму', search: 'prison' },
+  { id: 'space', title: 'Топ космических игр', search: 'space' },
+  { id: 'zombies', title: 'Топ игр про зомби', search: 'zombie' },
+  { id: 'war', title: 'Топ военных игр', search: 'war' },
+  { id: 'fantasy', title: 'Топ фэнтези', search: 'fantasy' },
+  { id: 'detective', title: 'Топ детективных игр', search: 'detective' },
+  { id: 'horror', title: 'Топ хорроров', search: 'horror' },
+  { id: 'postapoc', title: 'Топ постапокалипсиса', search: 'post-apocalyptic' },
+  { id: 'medieval', title: 'Топ средневековых игр', search: 'medieval' },
+  { id: 'scifi', title: 'Топ научной фантастики', search: 'sci-fi' },
+  { id: 'survival', title: 'Топ выживания', search: 'survival' },
+  { id: 'stealth', title: 'Топ стелс-игр', search: 'stealth' },
+  { id: 'vampire', title: 'Топ игр про вампиров', search: 'vampire' },
+  { id: 'robot', title: 'Топ игр про роботов', search: 'robot' },
+  { id: 'pirate', title: 'Топ пиратских игр', search: 'pirate' }
+];
+
+async function fetchIgdbGames(body) {
+  let r;
+  try {
+    r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 12000 });
+  } catch (err) {
+    if (err.response && err.response.status === 401) {
+      await refreshAccessToken();
+      r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 12000 });
+    } else throw err;
+  }
+  return (r && r.data) || [];
+}
+
+async function buildMainTops(weekKey) {
+  const cacheKey = `tops_feed_main_${weekKey}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Array.isArray(cached) && cached.length === 4) return cached;
+
+  const now = Math.floor(Date.now() / 1000);
+  const thirtyDaysAgo = now - 30 * 24 * 3600;
+  const y = new Date().getUTCFullYear();
+  const yearStart = Math.floor(new Date(Date.UTC(y, 0, 1)).getTime() / 1000);
+  const yearEnd = Math.floor(new Date(Date.UTC(y, 11, 31, 23, 59, 59)).getTime() / 1000);
+
+  const main = [];
+
+  for (const def of MAIN_TOPS) {
+    if (def.id === 'all_time') {
+      const body = `${fieldsBase}; where aggregated_rating >= 75 & aggregated_rating_count > 30; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+      const raw = await fetchIgdbGames(body).catch(() => []);
+      const games = raw.length ? await Promise.all(raw.map(processPopularGame)) : [];
+      main.push({ id: def.id, title: def.title, type: 'main', games });
+    } else if (def.id === 'new_releases') {
+      const body = `${fieldsBase}; where first_release_date >= ${thirtyDaysAgo} & aggregated_rating >= 50; sort first_release_date desc; limit ${TOPS_FEED_PER_BLOCK};`;
+      const raw = await fetchIgdbGames(body).catch(() => []);
+      const games = raw.length ? await Promise.all(raw.map(processPopularGame)) : [];
+      main.push({ id: def.id, title: def.title, type: 'main', games });
+    } else if (def.id === 'discussed') {
+      const db = getDb();
+      let discussedIds = [];
+      try {
+        const snap = await db.collection('game_comment_counts').orderBy('count_week', 'desc').limit(TOPS_FEED_PER_BLOCK).get();
+        discussedIds = snap.docs.map(d => parseInt(d.id, 10)).filter(Boolean);
+      } catch (_) { /* коллекция появится с комментариями */ }
+      let games = [];
+      if (discussedIds.length > 0) {
+        const body = `${fieldsBase}; where id = (${discussedIds.join(',')});`;
+        const raw = await fetchIgdbGames(body).catch(() => []);
+        const orderMap = new Map(discussedIds.map((id, i) => [id, i]));
+        const sorted = (raw || []).sort((a, b) => (orderMap.get(a.id) ?? 999) - (orderMap.get(b.id) ?? 999));
+        games = sorted.length ? await Promise.all(sorted.map(processPopularGame)) : [];
+      }
+      main.push({ id: def.id, title: def.title, type: 'main', games });
+    } else if (def.id === 'top_year') {
+      const body = `${fieldsBase}; where first_release_date >= ${yearStart} & first_release_date <= ${yearEnd} & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+      const raw = await fetchIgdbGames(body).catch(() => []);
+      const games = raw.length ? await Promise.all(raw.map(processPopularGame)) : [];
+      main.push({ id: def.id, title: def.title, type: 'main', games });
+    }
+  }
+
+  cache.set(cacheKey, main, TOPS_FEED_MAIN_CACHE_TTL);
+  return main;
+}
+
+async function buildNonMainTops(dateStr) {
+  const cacheKey = `tops_feed_nonmain_${dateStr}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Array.isArray(cached) && cached.length === 6) return cached;
+
+  const daySeed = new Date(dateStr + 'T12:00:00Z').getTime();
+  const seed = Math.abs((daySeed / 86400000) | 0);
+  const nonMain = [];
+
+  const genreIndex = seed % GENRES_ROTATION.length;
+  const genreDef = GENRES_ROTATION[genreIndex];
+  const genreBody = `${fieldsBase}; where genres = (${genreDef.genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+  const genreRaw = await fetchIgdbGames(genreBody).catch(() => []);
+  const genreGames = genreRaw.length ? await Promise.all(genreRaw.map(processPopularGame)) : [];
+  nonMain.push({ id: genreDef.id, title: genreDef.title, type: 'non_main', games: genreGames });
+
+  const singleBody = `${fieldsBase}; where game_modes = (1) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+  const singleRaw = await fetchIgdbGames(singleBody).catch(() => []);
+  nonMain.push({ id: 'single_player', title: 'Топ одиночных игр', type: 'non_main', games: singleRaw.length ? await Promise.all(singleRaw.map(processPopularGame)) : [] });
+
+  const multiBody = `${fieldsBase}; where game_modes = (2) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+  const multiRaw = await fetchIgdbGames(multiBody).catch(() => []);
+  nonMain.push({ id: 'multiplayer', title: 'Топ многопользовательских игр', type: 'non_main', games: multiRaw.length ? await Promise.all(multiRaw.map(processPopularGame)) : [] });
+
+  const usedThemeIds = new Set();
+  for (let i = 0; i < 3; i++) {
+    const idx = (seed + i * 17) % THEMES_ROTATION.length;
+    const t = THEMES_ROTATION[idx];
+    if (usedThemeIds.has(t.id)) {
+      const next = THEMES_ROTATION.find(tt => !usedThemeIds.has(tt.id));
+      if (!next) break;
+      usedThemeIds.add(next.id);
+      const searchBody = `${fieldsBase}; search "${next.search}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+      const themeRaw = await fetchIgdbGames(searchBody).catch(() => []);
+      nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeRaw.length ? await Promise.all(themeRaw.map(processPopularGame)) : [] });
+    } else {
+      usedThemeIds.add(t.id);
+      const searchBody = `${fieldsBase}; search "${t.search}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+      const themeRaw = await fetchIgdbGames(searchBody).catch(() => []);
+      nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeRaw.length ? await Promise.all(themeRaw.map(processPopularGame)) : [] });
+    }
+  }
+
+  const result = nonMain.slice(0, 6);
+  cache.set(cacheKey, result, TOPS_FEED_NON_MAIN_CACHE_TTL);
+  return result;
+}
+
+function mergeTopsFeed(mainTops, nonMainTops) {
+  const feed = [];
+  let m = 0, n = 0;
+  const pattern = [0, 1, 0, 1, 0, 1, 0, 1, 0, 0];
+  for (const useNonMain of pattern) {
+    if (useNonMain === 0 && n < nonMainTops.length) feed.push(nonMainTops[n++]);
+    else if (useNonMain === 1 && m < mainTops.length) feed.push(mainTops[m++]);
+  }
+  return feed;
+}
+
+async function getTopsFeed(dateStr) {
+  const weekKey = getWeekKey(dateStr);
+  const [mainTops, nonMainTops] = await Promise.all([buildMainTops(weekKey), buildNonMainTops(dateStr)]);
+  return mergeTopsFeed(mainTops, nonMainTops);
+}
+
+cron.schedule('5 0 * * 1', async () => {
+  const weekKey = getWeekKey(new Date().toISOString().slice(0, 10));
+  try {
+    cache.del(`tops_feed_main_${weekKey}`);
+    await buildMainTops(weekKey);
+  } catch (e) {
+    console.error('[cron] Main tops build failed:', e.message);
+  }
+});
+
 // Optional keep-alive ping to PUBLIC_URL every 10 minutes (to keep free hosts awake)
 function scheduleKeepAlive(publicUrl) {
   if (!publicUrl) {
@@ -1154,6 +1455,51 @@ app.get('/recommendations', optionalAuthenticate, async (req, res) => {
       } catch (e) { /* ignore */ }
     }
     res.status(500).json({ error: 'Recommendations error' });
+  }
+});
+
+// GET /games/tops/daily?date=YYYY-MM-DD — недельные топы (обновляются по понедельникам; date = любая дата недели)
+app.get('/games/tops/daily', async (req, res) => {
+  const dateStr = (req.query.date || '').trim() || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return res.status(400).json({ error: 'Invalid date, use YYYY-MM-DD' });
+  }
+  try {
+    const data = await buildWeeklyTopsForDate(dateStr);
+    res.json({ date: data.weekStart || data.date, tops: data.tops });
+  } catch (err) {
+    console.error('/games/tops/daily ERROR:', err.message);
+    res.status(500).json({ error: 'Failed to load weekly tops' });
+  }
+});
+
+// GET /games/compilations/daily?date=YYYY-MM-DD — недельные подборки (то же, что топы)
+app.get('/games/compilations/daily', async (req, res) => {
+  const dateStr = (req.query.date || '').trim() || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return res.status(400).json({ error: 'Invalid date, use YYYY-MM-DD' });
+  }
+  try {
+    const data = await buildWeeklyTopsForDate(dateStr);
+    res.json({ date: data.weekStart || data.date, compilations: data.compilations });
+  } catch (err) {
+    console.error('/games/compilations/daily ERROR:', err.message);
+    res.status(500).json({ error: 'Failed to load weekly compilations' });
+  }
+});
+
+// GET /games/tops/feed?date=YYYY-MM-DD — лента для вкладки «Топ игр»: 10 блоков в порядке неосновной, основной, … (4 основных + 6 неосновных)
+app.get('/games/tops/feed', async (req, res) => {
+  const dateStr = (req.query.date || '').trim() || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return res.status(400).json({ error: 'Invalid date, use YYYY-MM-DD' });
+  }
+  try {
+    const feed = await getTopsFeed(dateStr);
+    res.json({ date: dateStr, feed });
+  } catch (err) {
+    console.error('/games/tops/feed ERROR:', err.message);
+    res.status(500).json({ error: 'Failed to load tops feed' });
   }
 });
 
