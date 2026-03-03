@@ -120,6 +120,53 @@ async function refreshAccessToken() {
     throw err;
   }
 }
+
+// -------- Ollama (локальный LLM) для расширения тематических запросов --------
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434/api/generate';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2:3b';
+
+async function expandThemeWithLLM(themeId, themeTitle, baseSearch) {
+  try {
+    const prompt = `
+You are helping to build video game collections by theme.
+Theme id: ${themeId}
+Theme title: ${themeTitle}
+Base search term: ${baseSearch}
+
+Return ONLY a valid JSON object with this shape:
+{
+  "keywords": ["...", "...", "..."],
+  "extraQueries": ["...", "..."]
+}
+
+Rules:
+- keywords: 3-6 short words or phrases in English that describe this theme (for use in search).
+- extraQueries: 1-4 slightly longer search queries in English that match this theme.
+- Do NOT include explanation, comments or markdown. JSON only.
+`;
+
+    const r = await axios.post(OLLAMA_URL, {
+      model: OLLAMA_MODEL,
+      prompt,
+      stream: false
+    }, { timeout: 15000 });
+
+    const text = (r.data && typeof r.data.response === 'string')
+      ? r.data.response.trim()
+      : '';
+    if (!text) return null;
+    const json = text.replace(/^```json\s*|\s*```$/g, '').trim();
+    const parsed = JSON.parse(json);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [],
+      extraQueries: Array.isArray(parsed.extraQueries) ? parsed.extraQueries : []
+    };
+  } catch (e) {
+    console.warn('[expandThemeWithLLM]', e.message);
+    return null;
+  }
+}
 // Schedule daily token refresh at 00:00 server timezone (safe)
 cron.schedule('0 0 * * *', async () => {
   console.log('Scheduled access token refresh...');
@@ -414,21 +461,54 @@ async function buildNonMainTops(dateStr) {
   const multiRaw = await fetchIgdbGames(multiBody).catch(() => []);
   nonMain.push({ id: 'multiplayer', title: 'Top multiplayer games', type: 'non_main', games: multiRaw.length ? stripPlatforms(await Promise.all(multiRaw.map(processPopularGame))) : [] });
 
-  // Вспомогательная функция: пытаемся сначала строгий фильтр по рейтингу, потом более мягкий, чтобы темы почти всегда имели игры
-  async function fetchThemeGames(searchTerm) {
-    // Строгий вариант: с фильтром по рейтингу
-    const strictBody = `${fieldsBase}; search "${searchTerm}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
-    let raw = await fetchIgdbGames(strictBody).catch(() => []);
-    if (!raw || !raw.length) {
-      // Мягкий вариант: только поиск, без рейтинга, но с сортировкой по рейтингу
+  // Вспомогательная функция: строим тематический топ по нескольким LLM-подсказкам и IGDB-поиску
+  async function fetchThemeGames(searchTerm, themeId, themeTitle) {
+    const queries = new Set();
+    queries.add(searchTerm);
+
+    // Пробуем расширить тему с помощью локальной модели (ollama)
+    const llm = await expandThemeWithLLM(themeId, themeTitle, searchTerm);
+    if (llm) {
+      (llm.keywords || []).forEach(k => {
+        if (typeof k === 'string' && k.trim().length > 0) queries.add(k.trim());
+      });
+      (llm.extraQueries || []).forEach(q => {
+        if (typeof q === 'string' && q.trim().length > 0) queries.add(q.trim());
+      });
+    }
+
+    const allRaw = [];
+    for (const q of queries) {
+      // Строгий вариант по каждой подсказке
+      const strictBody = `${fieldsBase}; search "${q}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
+      const raw = await fetchIgdbGames(strictBody).catch(() => []);
+      if (raw && raw.length) {
+        allRaw.push(...raw);
+      }
+    }
+
+    // Если вообще ничего не нашли по расширенным подсказкам — пробуем только базовый searchTerm без where, но не подставляем "просто популярные"
+    if (!allRaw.length) {
       const looseBody = `${fieldsBase}; search "${searchTerm}"; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK * 3};`;
-      raw = await fetchIgdbGames(looseBody).catch(() => []);
+      const rawLoose = await fetchIgdbGames(looseBody).catch(() => []);
+      if (rawLoose && rawLoose.length) {
+        allRaw.push(...rawLoose);
+      }
     }
-    if (!raw || !raw.length) {
-      return [];
+
+    if (!allRaw.length) return [];
+
+    // Дедупликация по id
+    const seen = new Set();
+    const unique = [];
+    for (const g of allRaw) {
+      if (!seen.has(g.id)) {
+        seen.add(g.id);
+        unique.push(g);
+      }
     }
-    const processed = await Promise.all(raw.map(processPopularGame));
-    // Ограничиваем до нужного количества и убираем платформы
+
+    const processed = await Promise.all(unique.map(processPopularGame));
     return stripPlatforms(processed.slice(0, NON_MAIN_TOPS_PER_BLOCK));
   }
 
@@ -440,11 +520,11 @@ async function buildNonMainTops(dateStr) {
       const next = THEMES_ROTATION.find(tt => !usedThemeIds.has(tt.id));
       if (!next) break;
       usedThemeIds.add(next.id);
-      const themeGames = await fetchThemeGames(next.search);
+      const themeGames = await fetchThemeGames(next.search, next.id, next.title);
       nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeGames });
     } else {
       usedThemeIds.add(t.id);
-      const themeGames = await fetchThemeGames(t.search);
+      const themeGames = await fetchThemeGames(t.search, t.id, t.title);
       nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeGames });
     }
   }
