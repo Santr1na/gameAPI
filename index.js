@@ -440,23 +440,11 @@ async function buildNonMainTops(dateStr) {
       const next = THEMES_ROTATION.find(tt => !usedThemeIds.has(tt.id));
       if (!next) break;
       usedThemeIds.add(next.id);
-      let themeGames = await fetchThemeGames(next.search);
-      // Если по теме совсем нет игр, используем общий популярный фолбэк,
-      // чтобы блок не был пустым.
-      if (!themeGames || themeGames.length === 0) {
-        const fallbackBody = `${fieldsBase}; where aggregated_rating >= 70 & aggregated_rating_count >= 10; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
-        const rawFallback = await fetchIgdbGames(fallbackBody).catch(() => []);
-        themeGames = rawFallback.length ? stripPlatforms(await Promise.all(rawFallback.map(processPopularGame))) : [];
-      }
+      const themeGames = await fetchThemeGames(next.search);
       nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeGames });
     } else {
       usedThemeIds.add(t.id);
-      let themeGames = await fetchThemeGames(t.search);
-      if (!themeGames || themeGames.length === 0) {
-        const fallbackBody = `${fieldsBase}; where aggregated_rating >= 70 & aggregated_rating_count >= 10; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
-        const rawFallback = await fetchIgdbGames(fallbackBody).catch(() => []);
-        themeGames = rawFallback.length ? stripPlatforms(await Promise.all(rawFallback.map(processPopularGame))) : [];
-      }
+      const themeGames = await fetchThemeGames(t.search);
       nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeGames });
     }
   }
