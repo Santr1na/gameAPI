@@ -446,12 +446,16 @@ async function buildNonMainTops(dateStr) {
   const seed = Math.abs((daySeed / 86400000) | 0);
   const nonMain = [];
 
+  // 1. Жанровый блок (основной жанр на сегодня)
   const genreIndex = seed % GENRES_ROTATION.length;
   const genreDef = GENRES_ROTATION[genreIndex];
-  const genreBody = `${fieldsBase}; where genres = (${genreDef.genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
-  const genreRaw = await fetchIgdbGames(genreBody).catch(() => []);
-  const genreGames = genreRaw.length ? stripPlatforms(await Promise.all(genreRaw.map(processPopularGame))) : [];
-  nonMain.push({ id: genreDef.id, title: genreDef.title, type: 'non_main', games: genreGames });
+  const usedGenreIds = new Set();
+
+  const firstGenreBody = `${fieldsBase}; where genres = (${genreDef.genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
+  const firstGenreRaw = await fetchIgdbGames(firstGenreBody).catch(() => []);
+  const firstGenreGames = firstGenreRaw.length ? stripPlatforms(await Promise.all(firstGenreRaw.map(processPopularGame))) : [];
+  nonMain.push({ id: genreDef.id, title: genreDef.title, type: 'non_main', games: firstGenreGames });
+  usedGenreIds.add(genreDef.id);
 
   const singleBody = `${fieldsBase}; where game_modes = (1) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
   const singleRaw = await fetchIgdbGames(singleBody).catch(() => []);
@@ -461,72 +465,19 @@ async function buildNonMainTops(dateStr) {
   const multiRaw = await fetchIgdbGames(multiBody).catch(() => []);
   nonMain.push({ id: 'multiplayer', title: 'Top multiplayer games', type: 'non_main', games: multiRaw.length ? stripPlatforms(await Promise.all(multiRaw.map(processPopularGame))) : [] });
 
-  // Вспомогательная функция: строим тематический топ по нескольким LLM-подсказкам и IGDB-поиску
-  async function fetchThemeGames(searchTerm, themeId, themeTitle) {
-    const queries = new Set();
-    queries.add(searchTerm);
+  // Ещё 3 блока по другим жанрам (ротация по GENRES_ROTATION)
+  let offset = 1;
+  while (nonMain.length < 6 && offset < GENRES_ROTATION.length + 5) {
+    const idx = (genreIndex + offset) % GENRES_ROTATION.length;
+    offset++;
+    const gDef = GENRES_ROTATION[idx];
+    if (usedGenreIds.has(gDef.id)) continue;
+    usedGenreIds.add(gDef.id);
 
-    // Пробуем расширить тему с помощью локальной модели (ollama)
-    const llm = await expandThemeWithLLM(themeId, themeTitle, searchTerm);
-    if (llm) {
-      (llm.keywords || []).forEach(k => {
-        if (typeof k === 'string' && k.trim().length > 0) queries.add(k.trim());
-      });
-      (llm.extraQueries || []).forEach(q => {
-        if (typeof q === 'string' && q.trim().length > 0) queries.add(q.trim());
-      });
-    }
-
-    const allRaw = [];
-    for (const q of queries) {
-      // Строгий вариант по каждой подсказке
-      const strictBody = `${fieldsBase}; search "${q}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
-      const raw = await fetchIgdbGames(strictBody).catch(() => []);
-      if (raw && raw.length) {
-        allRaw.push(...raw);
-      }
-    }
-
-    // Если вообще ничего не нашли по расширенным подсказкам — пробуем только базовый searchTerm без where, но не подставляем "просто популярные"
-    if (!allRaw.length) {
-      const looseBody = `${fieldsBase}; search "${searchTerm}"; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK * 3};`;
-      const rawLoose = await fetchIgdbGames(looseBody).catch(() => []);
-      if (rawLoose && rawLoose.length) {
-        allRaw.push(...rawLoose);
-      }
-    }
-
-    if (!allRaw.length) return [];
-
-    // Дедупликация по id
-    const seen = new Set();
-    const unique = [];
-    for (const g of allRaw) {
-      if (!seen.has(g.id)) {
-        seen.add(g.id);
-        unique.push(g);
-      }
-    }
-
-    const processed = await Promise.all(unique.map(processPopularGame));
-    return stripPlatforms(processed.slice(0, NON_MAIN_TOPS_PER_BLOCK));
-  }
-
-  const usedThemeIds = new Set();
-  for (let i = 0; i < 3; i++) {
-    const idx = (seed + i * 17) % THEMES_ROTATION.length;
-    const t = THEMES_ROTATION[idx];
-    if (usedThemeIds.has(t.id)) {
-      const next = THEMES_ROTATION.find(tt => !usedThemeIds.has(tt.id));
-      if (!next) break;
-      usedThemeIds.add(next.id);
-      const themeGames = await fetchThemeGames(next.search, next.id, next.title);
-      nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeGames });
-    } else {
-      usedThemeIds.add(t.id);
-      const themeGames = await fetchThemeGames(t.search, t.id, t.title);
-      nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeGames });
-    }
+    const body = `${fieldsBase}; where genres = (${gDef.genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
+    const raw = await fetchIgdbGames(body).catch(() => []);
+    const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
+    nonMain.push({ id: gDef.id, title: gDef.title, type: 'non_main', games });
   }
 
   const result = nonMain.slice(0, 6);
