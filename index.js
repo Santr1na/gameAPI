@@ -408,6 +408,24 @@ async function buildNonMainTops(dateStr) {
   const multiRaw = await fetchIgdbGames(multiBody).catch(() => []);
   nonMain.push({ id: 'multiplayer', title: 'Top multiplayer games', type: 'non_main', games: multiRaw.length ? stripPlatforms(await Promise.all(multiRaw.map(processPopularGame))) : [] });
 
+  // Вспомогательная функция: пытаемся сначала строгий фильтр по рейтингу, потом более мягкий, чтобы темы почти всегда имели игры
+  async function fetchThemeGames(searchTerm) {
+    // Строгий вариант: с фильтром по рейтингу
+    const strictBody = `${fieldsBase}; search "${searchTerm}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
+    let raw = await fetchIgdbGames(strictBody).catch(() => []);
+    if (!raw || !raw.length) {
+      // Мягкий вариант: только поиск, без рейтинга, но с сортировкой по рейтингу
+      const looseBody = `${fieldsBase}; search "${searchTerm}"; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK * 3};`;
+      raw = await fetchIgdbGames(looseBody).catch(() => []);
+    }
+    if (!raw || !raw.length) {
+      return [];
+    }
+    const processed = await Promise.all(raw.map(processPopularGame));
+    // Ограничиваем до нужного количества и убираем платформы
+    return stripPlatforms(processed.slice(0, NON_MAIN_TOPS_PER_BLOCK));
+  }
+
   const usedThemeIds = new Set();
   for (let i = 0; i < 3; i++) {
     const idx = (seed + i * 17) % THEMES_ROTATION.length;
@@ -416,14 +434,12 @@ async function buildNonMainTops(dateStr) {
       const next = THEMES_ROTATION.find(tt => !usedThemeIds.has(tt.id));
       if (!next) break;
       usedThemeIds.add(next.id);
-      const searchBody = `${fieldsBase}; search "${next.search}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
-      const themeRaw = await fetchIgdbGames(searchBody).catch(() => []);
-      nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeRaw.length ? stripPlatforms(await Promise.all(themeRaw.map(processPopularGame))) : [] });
+      const themeGames = await fetchThemeGames(next.search);
+      nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeGames });
     } else {
       usedThemeIds.add(t.id);
-      const searchBody = `${fieldsBase}; search "${t.search}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
-      const themeRaw = await fetchIgdbGames(searchBody).catch(() => []);
-      nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeRaw.length ? stripPlatforms(await Promise.all(themeRaw.map(processPopularGame))) : [] });
+      const themeGames = await fetchThemeGames(t.search);
+      nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeGames });
     }
   }
 
