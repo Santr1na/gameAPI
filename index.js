@@ -1,105 +1,1665 @@
+// server.js
+require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-
+const NodeCache = require('node-cache');
+const cron = require('node-cron');
+const admin = require('firebase-admin');
+const path = require('path');
 const app = express();
-const port = process.env.PORT || 3000;
-
-app.use(cors());
-app.use(express.json());
-
-const clientId = '6suowimw8bemqf3u9gurh7qnpx74sd';
-const accessToken = 'q4hi62k3igoelslpmuka0vw2uwz8gv';
-const url = 'https://api.igdb.com/v4/games';
-const headers = {
-  'Client-ID': clientId,
-  'Authorization': `Bearer ${accessToken}`,
-};
-
-// Функция для обработки краткой информации об игре
-function processShortGame(game) {
-  return {
-    id: game.id,
-    name: game.name,
-    cover_image: game.cover ? `https:${game.cover.url}` : 'N/A',
-    critic_rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : 'N/A',
-    release_year: game.release_dates && game.release_dates.length > 0 && game.release_dates[game.release_dates.length - 1].date 
-      ? new Date(game.release_dates[game.release_dates.length - 1].date * 1000).getFullYear() 
-      : 'N/A',
-    main_genre: game.genres && game.genres.length > 0 ? game.genres[0].name : 'N/A',
-    platforms: game.platforms ? game.platforms.map(p => p.name) : ['N/A']
-  };
-}
-
-// Функция для обработки полной информации об игре
-function processGame(game) {
-  return {
-    id: game.id,
-    name: game.name,
-    genres: game.genres ? game.genres.map(g => g.name) : ['N/A'],
-    platforms: game.platforms ? game.platforms.map(p => p.name) : ['N/A'],
-    release_date: game.release_dates && game.release_dates.length > 0 && game.release_dates[game.release_dates.length - 1].date 
-      ? new Date(game.release_dates[game.release_dates.length - 1].date * 1000).toISOString().split('T')[0] 
-      : 'N/A',
-    rating: game.aggregated_rating ? Math.round(game.aggregated_rating) : (game.rating ? Math.round(game.rating) : 'N/A'),
-    rating_type: game.aggregated_rating ? 'Критики' : (game.rating ? 'Пользователи' : 'N/A'),
-    cover_image: game.cover ? `https:${game.cover.url}` : 'N/A',
-    age_ratings: game.age_ratings ? game.age_ratings.map(r => {
-      const ratings = {
-        1: 'ESRB: EC', 2: 'ESRB: E', 3: 'ESRB: E10+', 4: 'ESRB: T', 5: 'ESRB: M', 6: 'ESRB: AO',
-        7: 'PEGI: 3', 8: 'PEGI: 7', 9: 'PEGI: 12', 10: 'PEGI: 16', 11: 'PEGI: 18'
-      };
-      return ratings[r.rating] || 'N/A';
-    }) : ['N/A'],
-    summary: game.summary || 'N/A',
-    developers: game.involved_companies ? game.involved_companies.map(c => c.company.name) : ['N/A'],
-    videos: game.videos ? game.videos.map(v => `https://www.youtube.com/watch?v=${v.video_id}`) : ['N/A'],
-    similar_games: game.similar_games ? game.similar_games.map(s => ({
-      id: s.id,
-      name: s.name,
-      cover_image: s.cover ? `https:${s.cover.url}` : 'N/A',
-      critic_rating: s.aggregated_rating ? Math.round(s.aggregated_rating) : 'N/A',
-      release_year: s.release_dates && s.release_dates.length > 0 && s.release_dates[s.release_dates.length - 1].date 
-        ? new Date(s.release_dates[s.release_dates.length - 1].date * 1000).getFullYear() 
-        : 'N/A',
-      main_genre: s.genres && s.genres.length > 0 ? s.genres[0].name : 'N/A',
-      platforms: s.platforms ? s.platforms.map(p => p.name) : ['N/A']
-    })) : ['N/A']
-  };
-}
-
-// Эндпоинт для списка популярных игр (краткая информация)
-app.get('/games', async (req, res) => {
+const PORT = process.env.PORT || 3002;
+// -------- Firebase init (supports env JSON or local file) --------
+if (!admin.apps.length) {
   try {
-    const body = 'fields id, name, cover.url, aggregated_rating, release_dates.date, genres.name, platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; limit 10; sort aggregated_rating desc;';
-    const response = await axios.post(url, body, { headers });
-    const data = response.data;
-    const games = data.map(processShortGame);
-    res.json(games);
-  } catch (error) {
-    res.status(500).json({ error: 'Ошибка при получении данных: ' + (error.response ? error.response.status : error.message) });
+    let serviceAccount;
+    if (process.env.FIREBASE_SERVICE_ACCOUNT && process.env.FIREBASE_SERVICE_ACCOUNT.trim()) {
+      // FIREBASE_SERVICE_ACCOUNT should be a JSON string
+      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log('✓ Firebase Admin подключён через FIREBASE_SERVICE_ACCOUNT (env)');
+      console.log('  Service Account:', serviceAccount.client_email);
+      console.log('  Project ID:', serviceAccount.project_id);
+    } else {
+      // fallback to local file (useful for dev / VPS with file present)
+      const localPath = path.resolve(process.env.FIREBASE_SERVICE_ACCOUNT_PATH || './serviceAccountKey.json');
+      console.log('Loading Firebase credentials from:', localPath);
+      serviceAccount = require(localPath);
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log('✓ Firebase Admin подключён через serviceAccountKey.json (file)');
+      console.log('  Service Account:', serviceAccount.client_email);
+      console.log('  Project ID:', serviceAccount.project_id);
+    }
+  } catch (err) {
+    console.error('✗ Не удалось инициализировать Firebase:', err.message);
+    if (err.code === 'MODULE_NOT_FOUND') {
+      console.error('  Файл serviceAccountKey.json не найден. Проверьте путь к файлу.');
+    } else if (err.message.includes('JSON')) {
+      console.error('  Ошибка парсинга JSON. Проверьте формат FIREBASE_SERVICE_ACCOUNT.');
+    } else {
+      console.error('  Детали ошибки:', err);
+    }
+    process.exit(1);
+  }
+}
+// Firestore для личных избранных игр (рекомендации)
+function getDb() {
+  return admin.firestore();
+}
+
+// Test Firebase Auth connection on startup (только для проверки токенов пользователей)
+// Firestore проверяется при первом использовании, не блокирует запуск
+async function testFirebaseConnection() {
+  try {
+    console.log('Testing Firebase Auth connection...');
+    
+    // Verify the app is initialized
+    if (!admin.apps.length) {
+      console.error('✗ Firebase Admin не инициализирован!');
+      return false;
+    }
+    
+    // Test Auth (это все, что нужно для проверки токенов пользователей)
+    console.log('✓ Firebase Auth: доступен (проверка токенов пользователей работает)');
+    console.log('  Счетчики избранного хранятся в памяти (сбрасываются при перезапуске сервера)');
+    
+    return true;
+  } catch (err) {
+    console.error('✗ Firebase Auth connection test FAILED');
+    console.error('  Error message:', err.message);
+    console.error('  Error code:', err.code);
+    return false;
+  }
+}
+
+// -------- Middleware --------
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+app.use(express.json()); // parse application/json
+// -------- Cache & history --------
+const cache = new NodeCache({ stdTTL: 86400 }); // 24 hours
+const historyCache = new NodeCache({ stdTTL: 604800 }); // 7 days
+const gameCache = new NodeCache({ stdTTL: 3600 }); // 1 hour cache for individual games
+const historyKey = 'recent_games';
+// -------- IGDB / Steam config --------
+const clientId = process.env.IGDB_CLIENT_ID || '6suowimw8bemqf3u9gurh7qnpx74sd';
+const clientSecret = process.env.IGDB_CLIENT_SECRET || process.env.IGDB_CLIENT_SECRET || 'powongmt2u3r0jb136tfqhq0r8t5gb';
+let accessToken = process.env.IGDB_ACCESS_TOKEN || '';
+const igdbUrl = 'https://api.igdb.com/v4/games';
+const steamUrl = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
+let igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/plain' };
+let steamApps = null;
+// -------- Steam apps fetch --------
+async function getSteamApps() {
+  if (steamApps) return steamApps;
+  try {
+    const res = await axios.get(steamUrl, { timeout: 10000 });
+    steamApps = res.data.applist.apps;
+    return steamApps;
+  } catch (err) {
+    console.error('Steam fetch error:', err.message);
+    return [];
+  }
+}
+// -------- Access token refresh --------
+async function refreshAccessToken() {
+  try {
+    const res = await axios.post('https://id.twitch.tv/oauth2/token', null, {
+      params: { client_id: clientId, client_secret: clientSecret, grant_type: 'client_credentials' },
+      timeout: 10000,
+    });
+    accessToken = res.data.access_token;
+    igdbHeaders = { 'Client-ID': clientId, 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/plain' };
+    console.log('IGDB access token refreshed (first 8 chars):', accessToken ? accessToken.slice(0, 8) + '...' : '(empty)');
+    return accessToken;
+  } catch (err) {
+    console.error('Token refresh ERROR:', err.response?.data || err.message);
+    throw err;
+  }
+}
+
+// -------- Ollama (локальный LLM) для расширения тематических запросов --------
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434/api/generate';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2:3b';
+
+async function expandThemeWithLLM(themeId, themeTitle, baseSearch) {
+  try {
+    const prompt = `
+You are helping to build video game collections by theme.
+Theme id: ${themeId}
+Theme title: ${themeTitle}
+Base search term: ${baseSearch}
+
+Return ONLY a valid JSON object with this shape:
+{
+  "keywords": ["...", "...", "..."],
+  "extraQueries": ["...", "..."]
+}
+
+Rules:
+- keywords: 3-6 short words or phrases in English that describe this theme (for use in search).
+- extraQueries: 1-4 slightly longer search queries in English that match this theme.
+- Do NOT include explanation, comments or markdown. JSON only.
+`;
+
+    const r = await axios.post(OLLAMA_URL, {
+      model: OLLAMA_MODEL,
+      prompt,
+      stream: false
+    }, { timeout: 15000 });
+
+    const text = (r.data && typeof r.data.response === 'string')
+      ? r.data.response.trim()
+      : '';
+    if (!text) return null;
+    const json = text.replace(/^```json\s*|\s*```$/g, '').trim();
+    const parsed = JSON.parse(json);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [],
+      extraQueries: Array.isArray(parsed.extraQueries) ? parsed.extraQueries : []
+    };
+  } catch (e) {
+    console.warn('[expandThemeWithLLM]', e.message);
+    return null;
+  }
+}
+// Schedule daily token refresh at 00:00 server timezone (safe)
+cron.schedule('0 0 * * *', async () => {
+  console.log('Scheduled access token refresh...');
+  try {
+    await refreshAccessToken();
+  } catch (e) {
+    console.error('Scheduled token refresh failed:', e.message);
   }
 });
 
-// Эндпоинт для полной информации об игре по ID
-app.get('/games/:id', async (req, res) => {
-  try {
-    const gameId = req.params.id;
-    const body = `fields id, name, genres.name, platforms.name, release_dates.date, aggregated_rating, rating, cover.url, age_ratings.rating, summary, involved_companies.company.name, videos.video_id, similar_games.id, similar_games.name, similar_games.cover.url, similar_games.aggregated_rating, similar_games.release_dates.date, similar_games.genres.name, similar_games.platforms.name; where id = ${gameId};`;
-    const response = await axios.post(url, body, { headers });
-    const data = response.data;
+// -------- Недельные топы и подборки (обновляются раз в неделю, опционально с ИИ) --------
+// IGDB genre IDs: 4=Fighting, 5=Shooter, 8=Platform, 9=Puzzle, 10=Racing, 12=RPG, 14=Sport, 15=Strategy, 25=Adventure, 26=Indie, 31=Arcade
+const WEEKLY_TOPS_CACHE_TTL = 86400 * 14; // 2 недели
+const WEEKLY_TOPS_PER_THEME = 9;
+const FALLBACK_WEEKLY_THEMES = [
+  { id: 'rpg', title: 'Top RPG games', genreId: 12 },
+  { id: 'action', title: 'Top action games', genreId: 5 },
+  { id: 'indie', title: 'Top indie games', genreId: 26 },
+  { id: 'strategy', title: 'Top strategy games', genreId: 15 },
+  { id: 'adventure', title: 'Top adventure games', genreId: 25 }
+];
 
-    if (!data || data.length === 0) {
-      return res.status(404).json({ error: 'Игра не найдена' });
+/** Возвращает понедельник недели для даты YYYY-MM-DD (ключ недели). */
+function getWeekKey(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  const day = d.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setUTCDate(d.getUTCDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+async function getWeeklyThemesFromAI(weekKey) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || !apiKey.trim()) return null;
+  try {
+    const res = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'Ты помощник для подборки игр. Отвечай только валидным JSON-массивом объектов с полями id (латиница), title (название подборки на русском), genreId (число — один из: 4,5,8,9,10,12,14,15,25,26,31). Без комментариев и markdown.'
+          },
+          {
+            role: 'user',
+            content: `Дай 5 тематических подборок на неделю ${weekKey}. Разнообразь жанры (RPG=12, Shooter=5, Indie=26, Strategy=15, Adventure=25, Racing=10, Arcade=31, Puzzle=9, Platform=8, Fighting=4, Sport=14). Пример: [{"id":"rpg","title":"Лучшие RPG недели","genreId":12}]`
+          }
+        ],
+        max_tokens: 400,
+        temperature: 0.7
+      },
+      { headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+    );
+    const text = res.data?.choices?.[0]?.message?.content?.trim() || '';
+    const json = text.replace(/^```\w*\n?|\n?```$/g, '').trim();
+    const themes = JSON.parse(json);
+    if (Array.isArray(themes) && themes.length > 0) {
+      return themes.filter(t => t && Number.isInteger(t.genreId) && t.title);
+    }
+  } catch (e) {
+    console.warn('[getWeeklyThemesFromAI]', e.message);
+  }
+  return null;
+}
+
+async function buildWeeklyTopsForDate(dateStr) {
+  const weekKey = getWeekKey(dateStr);
+  const cacheKey = `weekly_tops_${weekKey}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.tops && cached.tops.length > 0) {
+    return cached;
+  }
+  let themes = await getWeeklyThemesFromAI(weekKey);
+  if (!themes || themes.length === 0) {
+    themes = FALLBACK_WEEKLY_THEMES;
+  }
+  const fields = 'fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name';
+  const tops = [];
+  for (const theme of themes.slice(0, 5)) {
+    const genreId = theme.genreId != null ? theme.genreId : theme.genre;
+    try {
+      const body = `${fields}; where genres = (${genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${WEEKLY_TOPS_PER_THEME};`;
+      const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+      const raw = r.data || [];
+      const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
+      tops.push({
+        id: theme.id || `genre_${genreId}`,
+        title: theme.title || `Топ ${genreId}`,
+        games
+      });
+    } catch (err) {
+      if (err.response && err.response.status === 401) {
+        try {
+          await refreshAccessToken();
+          const body = `${fields}; where genres = (${genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${WEEKLY_TOPS_PER_THEME};`;
+          const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+          const games = (r.data || []).length ? stripPlatforms(await Promise.all((r.data || []).map(processPopularGame))) : [];
+          tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Топ ${genreId}`, games });
+        } catch (retryErr) {
+          console.warn(`[buildWeeklyTops] theme ${theme.title || genreId} failed:`, retryErr.message);
+          tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Top ${genreId}`, games: [] });
+        }
+      } else {
+        console.warn(`[buildWeeklyTops] theme ${theme.title || genreId} failed:`, err.message);
+        tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Top ${genreId}`, games: [] });
+      }
+    }
+  }
+  const result = { date: weekKey, weekStart: weekKey, tops, compilations: tops };
+  cache.set(cacheKey, result, WEEKLY_TOPS_CACHE_TTL);
+  return result;
+}
+
+// Раз в неделю (понедельник 00:05) пересобираем топы
+cron.schedule('5 0 * * 1', async () => {
+  const dateStr = new Date().toISOString().slice(0, 10);
+  console.log('[cron] Building weekly tops for week starting', getWeekKey(dateStr));
+  try {
+    await buildWeeklyTopsForDate(dateStr);
+  } catch (e) {
+    console.error('[cron] Weekly tops build failed:', e.message);
+  }
+});
+
+// -------- Вкладка «Топ игр»: 4 основных (неделя) + 6 неосновных (день), порядок N,M,N,M,N,M,N,M,N,N --------
+const TOPS_FEED_MAIN_CACHE_TTL = 86400 * 14;
+const TOPS_FEED_NON_MAIN_CACHE_TTL = 86400 * 2;
+const MAIN_TOPS_PER_BLOCK = 10;
+const NON_MAIN_TOPS_PER_BLOCK = 9;
+const fieldsBase = 'fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name';
+
+const MAIN_TOPS = [
+  { id: 'all_time', title: 'Best games of all time', type: 'main' },
+  { id: 'new_releases', title: 'Top new releases', type: 'main' },
+  { id: 'discussed', title: 'Top discussed games', type: 'main' },
+  { id: 'top_year', title: 'Top games of the year', type: 'main' }
+];
+
+const GENRES_ROTATION = [
+  { id: 'rpg', title: 'Top RPG games', genreId: 12 },
+  { id: 'shooter', title: 'Top shooter games', genreId: 5 },
+  { id: 'indie', title: 'Top indie games', genreId: 26 },
+  { id: 'strategy', title: 'Top strategy games', genreId: 15 },
+  { id: 'adventure', title: 'Top adventure games', genreId: 25 },
+  { id: 'racing', title: 'Top racing games', genreId: 10 },
+  { id: 'fighting', title: 'Top fighting games', genreId: 4 },
+  { id: 'platform', title: 'Top platformer games', genreId: 8 },
+  { id: 'puzzle', title: 'Top puzzle games', genreId: 9 },
+  { id: 'sport', title: 'Top sports games', genreId: 14 },
+  { id: 'arcade', title: 'Top arcade games', genreId: 31 }
+];
+
+const THEMES_ROTATION = [
+  { id: 'prison', title: 'Top prison games', search: 'prison' },
+  { id: 'space', title: 'Top space games', search: 'space' },
+  { id: 'zombies', title: 'Top zombie games', search: 'zombie' },
+  { id: 'war', title: 'Top war games', search: 'war' },
+  { id: 'fantasy', title: 'Top fantasy games', search: 'fantasy' },
+  { id: 'detective', title: 'Top detective games', search: 'detective' },
+  { id: 'horror', title: 'Top horror games', search: 'horror' },
+  { id: 'postapoc', title: 'Top post-apocalyptic games', search: 'post-apocalyptic' },
+  { id: 'medieval', title: 'Top medieval games', search: 'medieval' },
+  { id: 'scifi', title: 'Top sci-fi games', search: 'sci-fi' },
+  { id: 'survival', title: 'Top survival games', search: 'survival' },
+  { id: 'stealth', title: 'Top stealth games', search: 'stealth' },
+  { id: 'vampire', title: 'Top vampire games', search: 'vampire' },
+  { id: 'robot', title: 'Top robot games', search: 'robot' },
+  { id: 'pirate', title: 'Top pirate games', search: 'pirate' }
+];
+
+function stripPlatforms(games) {
+  return games.map(({ platforms, ...rest }) => rest);
+}
+
+async function fetchIgdbGames(body) {
+  let r;
+  try {
+    r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 12000 });
+  } catch (err) {
+    if (err.response && err.response.status === 401) {
+      await refreshAccessToken();
+      r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 12000 });
+    } else throw err;
+  }
+  return (r && r.data) || [];
+}
+
+async function buildMainTops(weekKey) {
+  const cacheKey = `tops_feed_main_${weekKey}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Array.isArray(cached) && cached.length === 4) return cached;
+
+  const now = Math.floor(Date.now() / 1000);
+  const thirtyDaysAgo = now - 30 * 24 * 3600;
+  const y = new Date().getUTCFullYear();
+  const yearStart = Math.floor(new Date(Date.UTC(y, 0, 1)).getTime() / 1000);
+  const yearEnd = Math.floor(new Date(Date.UTC(y, 11, 31, 23, 59, 59)).getTime() / 1000);
+
+  const main = [];
+
+  for (const def of MAIN_TOPS) {
+    if (def.id === 'all_time') {
+      // Строим топ «за всё время» в два шага, чтобы почти всегда набрать 9 игр:
+      // 1) строгий фильтр по рейтингу и числу оценок
+      // 2) при нехватке – более мягкий фильтр, без дубликатов
+      let allGames = [];
+      const strictBody = `${fieldsBase}; where aggregated_rating >= 80 & aggregated_rating_count > 50; sort aggregated_rating desc; limit 50;`;
+      const strictRaw = await fetchIgdbGames(strictBody).catch(() => []);
+      if (strictRaw && strictRaw.length) {
+        const processed = await Promise.all(strictRaw.map(processPopularGame));
+        allGames = processed;
+      }
+      if (allGames.length < MAIN_TOPS_PER_BLOCK) {
+        const looseBody = `${fieldsBase}; where aggregated_rating >= 70 & aggregated_rating_count >= 10; sort aggregated_rating desc; limit 100;`;
+        const looseRaw = await fetchIgdbGames(looseBody).catch(() => []);
+        if (looseRaw && looseRaw.length) {
+          const processedLoose = await Promise.all(looseRaw.map(processPopularGame));
+          const knownIds = new Set(allGames.map(g => g.id));
+          for (const g of processedLoose) {
+            if (!knownIds.has(g.id)) {
+              allGames.push(g);
+              knownIds.add(g.id);
+              if (allGames.length >= MAIN_TOPS_PER_BLOCK) break;
+            }
+          }
+        }
+      }
+      const games = stripPlatforms(allGames.slice(0, MAIN_TOPS_PER_BLOCK));
+      main.push({ id: def.id, title: def.title, type: 'main', games });
+    } else if (def.id === 'new_releases') {
+      // Только релизы, которые уже вышли (first_release_date <= now) и не старше 30 дней
+      const body = `${fieldsBase}; where first_release_date >= ${thirtyDaysAgo} & first_release_date <= ${now} & aggregated_rating >= 50; sort first_release_date desc; limit ${MAIN_TOPS_PER_BLOCK};`;
+      const raw = await fetchIgdbGames(body).catch(() => []);
+      const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
+      main.push({ id: def.id, title: def.title, type: 'main', games });
+    } else if (def.id === 'discussed') {
+      const db = getDb();
+      let discussedIds = [];
+      try {
+        const snap = await db.collection('game_comment_counts').orderBy('count_week', 'desc').limit(TOPS_FEED_PER_BLOCK).get();
+        discussedIds = snap.docs.map(d => parseInt(d.id, 10)).filter(Boolean);
+      } catch (_) { /* коллекция появится с комментариями */ }
+      let games = [];
+      if (discussedIds.length > 0) {
+        const body = `${fieldsBase}; where id = (${discussedIds.join(',')});`;
+        const raw = await fetchIgdbGames(body).catch(() => []);
+        const orderMap = new Map(discussedIds.map((id, i) => [id, i]));
+        const sorted = (raw || []).sort((a, b) => (orderMap.get(a.id) ?? 999) - (orderMap.get(b.id) ?? 999));
+        games = sorted.length ? stripPlatforms(await Promise.all(sorted.map(processPopularGame))) : [];
+      }
+      // Если пока нет комментариев или игр по ним, используем популярные игры как мягкий фолбэк
+      if (games.length === 0) {
+        const fallbackBody = `${fieldsBase}; where aggregated_rating >= 75 & aggregated_rating_count > 20; sort aggregated_rating desc; limit ${MAIN_TOPS_PER_BLOCK};`;
+        const rawFallback = await fetchIgdbGames(fallbackBody).catch(() => []);
+        games = rawFallback.length ? stripPlatforms(await Promise.all(rawFallback.map(processPopularGame))) : [];
+      }
+      main.push({ id: def.id, title: def.title, type: 'main', games });
+    } else if (def.id === 'top_year') {
+      const body = `${fieldsBase}; where first_release_date >= ${yearStart} & first_release_date <= ${yearEnd} & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${MAIN_TOPS_PER_BLOCK};`;
+      const raw = await fetchIgdbGames(body).catch(() => []);
+      const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
+      main.push({ id: def.id, title: def.title, type: 'main', games });
+    }
+  }
+
+  cache.set(cacheKey, main, TOPS_FEED_MAIN_CACHE_TTL);
+  return main;
+}
+
+async function buildNonMainTops(dateStr) {
+  const cacheKey = `tops_feed_nonmain_${dateStr}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Array.isArray(cached) && cached.length === 6) return cached;
+
+  const daySeed = new Date(dateStr + 'T12:00:00Z').getTime();
+  const seed = Math.abs((daySeed / 86400000) | 0);
+  const nonMain = [];
+
+  const genreIndex = seed % GENRES_ROTATION.length;
+  const genreDef = GENRES_ROTATION[genreIndex];
+  const genreBody = `${fieldsBase}; where genres = (${genreDef.genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
+  const genreRaw = await fetchIgdbGames(genreBody).catch(() => []);
+  const genreGames = genreRaw.length ? stripPlatforms(await Promise.all(genreRaw.map(processPopularGame))) : [];
+  nonMain.push({ id: genreDef.id, title: genreDef.title, type: 'non_main', games: genreGames });
+
+  const singleBody = `${fieldsBase}; where game_modes = (1) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
+  const singleRaw = await fetchIgdbGames(singleBody).catch(() => []);
+  nonMain.push({ id: 'single_player', title: 'Top single-player games', type: 'non_main', games: singleRaw.length ? stripPlatforms(await Promise.all(singleRaw.map(processPopularGame))) : [] });
+
+  const multiBody = `${fieldsBase}; where game_modes = (2) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
+  const multiRaw = await fetchIgdbGames(multiBody).catch(() => []);
+  nonMain.push({ id: 'multiplayer', title: 'Top multiplayer games', type: 'non_main', games: multiRaw.length ? stripPlatforms(await Promise.all(multiRaw.map(processPopularGame))) : [] });
+
+  // Вспомогательная функция: строим тематический топ по нескольким LLM-подсказкам и IGDB-поиску
+  async function fetchThemeGames(searchTerm, themeId, themeTitle) {
+    const queries = new Set();
+    queries.add(searchTerm);
+
+    // Пробуем расширить тему с помощью локальной модели (ollama)
+    const llm = await expandThemeWithLLM(themeId, themeTitle, searchTerm);
+    if (llm) {
+      (llm.keywords || []).forEach(k => {
+        if (typeof k === 'string' && k.trim().length > 0) queries.add(k.trim());
+      });
+      (llm.extraQueries || []).forEach(q => {
+        if (typeof q === 'string' && q.trim().length > 0) queries.add(q.trim());
+      });
     }
 
-    const game = processGame(data[0]);
-    res.json(game);
-  } catch (error) {
-    res.status(500).json({ error: 'Ошибка при получении данных: ' + (error.response ? error.response.status : error.message) });
+    const allRaw = [];
+    for (const q of queries) {
+      // Строгий вариант по каждой подсказке
+      const strictBody = `${fieldsBase}; search "${q}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
+      const raw = await fetchIgdbGames(strictBody).catch(() => []);
+      if (raw && raw.length) {
+        allRaw.push(...raw);
+      }
+    }
+
+    // Если вообще ничего не нашли по расширенным подсказкам — пробуем только базовый searchTerm без where, но не подставляем "просто популярные"
+    if (!allRaw.length) {
+      const looseBody = `${fieldsBase}; search "${searchTerm}"; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK * 3};`;
+      const rawLoose = await fetchIgdbGames(looseBody).catch(() => []);
+      if (rawLoose && rawLoose.length) {
+        allRaw.push(...rawLoose);
+      }
+    }
+
+    if (!allRaw.length) return [];
+
+    // Дедупликация по id
+    const seen = new Set();
+    const unique = [];
+    for (const g of allRaw) {
+      if (!seen.has(g.id)) {
+        seen.add(g.id);
+        unique.push(g);
+      }
+    }
+
+    const processed = await Promise.all(unique.map(processPopularGame));
+    return stripPlatforms(processed.slice(0, NON_MAIN_TOPS_PER_BLOCK));
+  }
+
+  const usedThemeIds = new Set();
+  for (let i = 0; i < 3; i++) {
+    const idx = (seed + i * 17) % THEMES_ROTATION.length;
+    const t = THEMES_ROTATION[idx];
+    if (usedThemeIds.has(t.id)) {
+      const next = THEMES_ROTATION.find(tt => !usedThemeIds.has(tt.id));
+      if (!next) break;
+      usedThemeIds.add(next.id);
+      const themeGames = await fetchThemeGames(next.search, next.id, next.title);
+      nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeGames });
+    } else {
+      usedThemeIds.add(t.id);
+      const themeGames = await fetchThemeGames(t.search, t.id, t.title);
+      nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeGames });
+    }
+  }
+
+  const result = nonMain.slice(0, 6);
+  cache.set(cacheKey, result, TOPS_FEED_NON_MAIN_CACHE_TTL);
+  return result;
+}
+
+function mergeTopsFeed(mainTops, nonMainTops) {
+  const feed = [];
+  let m = 0, n = 0;
+  const pattern = [0, 1, 0, 1, 0, 1, 0, 1, 0, 0];
+  for (const useNonMain of pattern) {
+    if (useNonMain === 0 && n < nonMainTops.length) feed.push(nonMainTops[n++]);
+    else if (useNonMain === 1 && m < mainTops.length) feed.push(mainTops[m++]);
+  }
+  return feed;
+}
+
+async function getTopsFeed(dateStr) {
+  const weekKey = getWeekKey(dateStr);
+  const [mainTops, nonMainTops] = await Promise.all([buildMainTops(weekKey), buildNonMainTops(dateStr)]);
+  return mergeTopsFeed(mainTops, nonMainTops);
+}
+
+cron.schedule('5 0 * * 1', async () => {
+  const weekKey = getWeekKey(new Date().toISOString().slice(0, 10));
+  try {
+    cache.del(`tops_feed_main_${weekKey}`);
+    await buildMainTops(weekKey);
+  } catch (e) {
+    console.error('[cron] Main tops build failed:', e.message);
   }
 });
 
-app.listen(port, () => {
-  console.log(`Сервер запущен на порту ${port}`);
+// Optional keep-alive ping to PUBLIC_URL every 10 minutes (to keep free hosts awake)
+function scheduleKeepAlive(publicUrl) {
+  if (!publicUrl) {
+    console.warn('No PUBLIC_URL provided, skip keep-alive ping.');
+    return;
+  }
+  cron.schedule('*/10 * * * *', async () => {
+    try {
+      const r = await axios.get(`${publicUrl}/health`, { timeout: 5000 });
+      if (r.status === 200) {
+        console.log(`Keep-alive ping successful to ${publicUrl} at ${new Date().toISOString()}`);
+      } else {
+        console.warn('Keep-alive ping returned status', r.status);
+      }
+    } catch (e) {
+      console.error('Keep-alive ping failed:', e.message);
+    }
+  }, { scheduled: true });
+}
+// -------- Auth middleware --------
+async function authenticate(req, res, next) {
+  const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'No token' });
+  }
+  const token = authHeader.split('Bearer ')[1];
+  try {
+    req.user = await admin.auth().verifyIdToken(token);
+    next();
+  } catch (err) {
+    console.error('Auth ERROR:', err.message);
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+// Опциональная авторизация: если токен есть и валиден — req.user, иначе req.user = null (для рекомендаций гостям)
+async function optionalAuthenticate(req, res, next) {
+  const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    req.user = null;
+    return next();
+  }
+  const token = authHeader.split('Bearer ')[1];
+  try {
+    req.user = await admin.auth().verifyIdToken(token);
+  } catch (err) {
+    req.user = null;
+  }
+  next();
+}
+// -------- Счетчики избранного в памяти --------
+// Счетчики хранятся в памяти: favoriteCounts[gameId] = количество пользователей
+// При перезапуске сервера счетчики сбрасываются в 0
+const favoriteCounts = {}; // { gameId: count }
+
+function getFavoriteCount(gameId) {
+  const gameIdStr = String(gameId);
+  return favoriteCounts[gameIdStr] || favoriteCounts[gameId] || 0;
+}
+
+function updateFavoriteCount(gameId, change) {
+  const gameIdStr = String(gameId);
+  const currentCount = favoriteCounts[gameIdStr] || favoriteCounts[gameId] || 0;
+  const newCount = Math.max(currentCount + change, 0); // Не меньше 0
+  favoriteCounts[gameIdStr] = newCount;
+  favoriteCounts[gameId] = newCount; // Сохраняем оба ключа для совместимости
+  return newCount;
+}
+
+// -------- Счетчики статусов в памяти --------
+// Счетчики хранятся в памяти: statusCounts[gameId][status] = количество пользователей
+// При перезапуске сервера счетчики сбрасываются в 0
+const statusCounts = {}; // { gameId: { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 } }
+
+function getStatusCounts(gameId) {
+  const gameIdStr = String(gameId);
+  const gameStatusCounts = statusCounts[gameIdStr] || statusCounts[gameId];
+  if (gameStatusCounts) {
+    return {
+      playing: gameStatusCounts.playing || 0,
+      ill_play: gameStatusCounts.ill_play || 0,
+      passed: gameStatusCounts.passed || 0,
+      postponed: gameStatusCounts.postponed || 0,
+      abandoned: gameStatusCounts.abandoned || 0
+    };
+  }
+  return { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
+}
+
+function updateStatusCount(gameId, status, change) {
+  const gameIdStr = String(gameId);
+  if (!statusCounts[gameIdStr]) {
+    statusCounts[gameIdStr] = { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
+  }
+  if (!statusCounts[gameId]) {
+    statusCounts[gameId] = statusCounts[gameIdStr];
+  }
+  
+  const currentCount = statusCounts[gameIdStr][status] || 0;
+  const newCount = Math.max(currentCount + change, 0); // Не меньше 0
+  statusCounts[gameIdStr][status] = newCount;
+  statusCounts[gameId][status] = newCount; // Сохраняем оба ключа для совместимости
+  return newCount;
+}
+
+function resetAllStatusCounts(gameId) {
+  const gameIdStr = String(gameId);
+  statusCounts[gameIdStr] = { playing: 0, ill_play: 0, passed: 0, postponed: 0, abandoned: 0 };
+  statusCounts[gameId] = statusCounts[gameIdStr];
+  return statusCounts[gameIdStr];
+}
+
+// -------- Личные избранные в Firestore (для рекомендаций) --------
+async function addUserFavorite(uid, gameId) {
+  try {
+    const db = getDb();
+    const gameIdStr = String(gameId);
+    await db.collection('users').doc(uid).collection('favorites').doc(gameIdStr).set({
+      gameId: gameIdStr,
+      addedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    cache.del(`user_favorites_${uid}`);
+    cache.del(`recommendations_similar_${uid}`);
+    return true;
+  } catch (err) {
+    console.error('[addUserFavorite]', err.message);
+    return false;
+  }
+}
+
+async function removeUserFavorite(uid, gameId) {
+  try {
+    const db = getDb();
+    await db.collection('users').doc(uid).collection('favorites').doc(String(gameId)).delete();
+    cache.del(`user_favorites_${uid}`);
+    cache.del(`recommendations_similar_${uid}`);
+    return true;
+  } catch (err) {
+    console.error('[removeUserFavorite]', err.message);
+    return false;
+  }
+}
+
+const USER_FAVORITES_CACHE_TTL = 60; // 1 мин — меньше обращений к Firestore при пагинации
+
+async function getUserFavoriteGameIds(uid) {
+  const cacheKey = `user_favorites_${uid}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Array.isArray(cached)) return cached;
+  try {
+    const db = getDb();
+    const snap = await db.collection('users').doc(uid).collection('favorites').get();
+    const ids = snap.docs.map(d => String(d.data().gameId || d.id));
+    if (ids.length > 0) cache.set(cacheKey, ids, USER_FAVORITES_CACHE_TTL);
+    return ids;
+  } catch (err) {
+    console.error('[getUserFavoriteGameIds]', err.message);
+    return [];
+  }
+}
+
+// -------- Utils (covers, history, shuffle) --------
+function weightedShuffle(arr, hist) {
+  return arr.map(g => ({ g, w: hist.includes(g.id) ? 0.01 : (Math.random() + 1) }))
+    .sort((a, b) => b.w - a.w).map(i => i.g);
+}
+// Fisher–Yates shuffle — чтобы при каждом обновлении кэша выдавались разные игры
+function shuffleArray(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function updateHistory(ids) {
+  let h = historyCache.get(historyKey) || [];
+  h = [...new Set([...ids, ...h])].slice(0, 200);
+  historyCache.set(historyKey, h);
+}
+// Заглушка, когда у игры нет обложки в IGDB и Steam — чтобы не показывать пусто/битое
+const DEFAULT_COVER_PLACEHOLDER = 'https://placehold.co/264x352/2c2c2c/9ca3af?text=No+Cover';
+
+function normalizeNameForMatch(name) {
+  if (!name || typeof name !== 'string') return '';
+  return name
+    .toLowerCase()
+    .replace(/\s*[:\-–—]\s*.*$/, '')       // убрать всё после " - " или " : "
+    .replace(/\s*(edition|goty|game of the year|definitive edition|remastered|remaster)\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function getSteamCover(name, plats) {
+  if (!plats.includes('Steam')) return null;
+  const key = `steam_${name.toLowerCase()}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const apps = await getSteamApps();
+  if (!apps || !apps.length) return null;
+  const nameLower = name.toLowerCase();
+  const nameNorm = normalizeNameForMatch(name);
+  let app = apps.find(a => a.name && a.name.toLowerCase() === nameLower);
+  if (!app && nameNorm) {
+    app = apps.find(a => a.name && normalizeNameForMatch(a.name) === nameNorm);
+  }
+  if (!app && nameNorm.length > 3) {
+    const firstWords = nameNorm.split(/\s+/).slice(0, 2).join(' ');
+    app = apps.find(a => a.name && normalizeNameForMatch(a.name).startsWith(firstWords));
+  }
+  if (app) {
+    const url = `https://steamcdn-a.akamaihd.net/steam/apps/${app.appid}/library_600x900.jpg`;
+    cache.set(key, url, 86400);
+    return url;
+  }
+  return null;
+}
+
+async function getGameCover(name, plats, igdb) {
+  const steam = await getSteamCover(name, plats);
+  if (steam) return steam;
+  if (igdb && igdb !== 'N/A') {
+    const url = igdb.replace('t_thumb', 't_cover_big');
+    return url.startsWith('http') ? url : `https:${url}`;
+  }
+  return DEFAULT_COVER_PLACEHOLDER;
+}
+// -------- Processors (transform IGDB responses to our API shape) --------
+async function processSearchGame(g) {
+  const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
+  const plats = g.platforms ? g.platforms.map(p => p.name) : [];
+  return {
+    id: g.id,
+    name: g.name,
+    cover_image: await getGameCover(g.name, plats, cover),
+    rating: Math.round(g.aggregated_rating || g.rating || 0) || 'N/A',
+    description: g.summary || 'N/A',
+    platforms: plats,
+    release_year: g.release_dates?.[0]?.date ? new Date(g.release_dates[0].date * 1000).getFullYear() : 'N/A',
+    main_genre: g.genres?.[0]?.name || 'N/A'
+  };
+}
+// Показываем рейтинг только при достаточном числе оценок (иначе у малозначимых игр бывает 100)
+const MIN_RATING_COUNT_TO_SHOW = 5;
+
+function formatCriticRating(g) {
+  const rating = g.aggregated_rating;
+  const count = g.aggregated_rating_count ?? 0;
+  if (rating == null || count < MIN_RATING_COUNT_TO_SHOW) return 'N/A';
+  const n = Math.round(rating);
+  return n === 0 ? 'N/A' : n;
+}
+
+async function processPopularGame(g) {
+  const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
+  const plats = g.platforms ? g.platforms.map(p => p.name) : [];
+  return {
+    id: g.id,
+    name: g.name,
+    cover_image: await getGameCover(g.name, plats, cover),
+    critic_rating: formatCriticRating(g),
+    release_year: g.release_dates?.[0]?.date ? new Date(g.release_dates[0].date * 1000).getFullYear() : 'N/A',
+    main_genre: g.genres?.[0]?.name || 'N/A',
+    platforms: plats
+  };
+}
+async function processGame(g) {
+  // Получаем счетчики избранного и статусов из памяти
+  const favoriteCount = getFavoriteCount(g.id);
+  const gameStatusCounts = getStatusCounts(g.id);
+  const cover = g.cover ? `https:${g.cover.url}` : 'N/A';
+  const plats = g.platforms ? g.platforms.map(p => p.name) : [];
+  const genres = g.genres ? g.genres.map(gg => gg.name) : [];
+  // videos - преобразуем video_id в полные YouTube URL (без ограничения количества)
+  const videos = g.videos && g.videos.length > 0
+    ? g.videos
+        .filter(v => v.video_id) // фильтруем только те, у которых есть video_id
+        .map(v => `https://www.youtube.com/watch?v=${v.video_id}`)
+    : [];
+  // similar games
+  const similar = g.similar_games?.length
+    ? await Promise.all(g.similar_games.slice(0, 3).map(async s => {
+      const sc = s.cover ? `https:${s.cover.url}` : 'N/A';
+      const sp = s.platforms ? s.platforms.map(p => p.name) : [];
+      return {
+        id: s.id,
+        name: s.name,
+        cover_image: await getGameCover(s.name, sp, sc),
+        critic_rating: formatCriticRating(s),
+        release_year: s.release_dates?.[0]?.date ? new Date(s.release_dates[0].date * 1000).getFullYear() : 'N/A',
+        main_genre: s.genres?.[0]?.name || 'N/A',
+        platforms: sp
+      };
+    })) : [];
+  // age ratings handling (kept simple)
+  const ageRatings = (() => {
+    const HARD_FALLBACK = { 242408: '18', 7346: '12', 1942: '18', 19560: '18', 11156: '16', 250: '18', 287: '18' };
+    if (HARD_FALLBACK[g.id]) return [`PEGI: ${HARD_FALLBACK[g.id]}`];
+    if (g.age_ratings && g.age_ratings.length > 0) {
+      const pegi = g.age_ratings.find(r => r.organization === 2);
+      if (pegi) {
+        if (pegi.rating_category && [7,8,9,10,11].includes(pegi.rating_category)) {
+          const map = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
+          return [`PEGI: ${map[pegi.rating_category]}`];
+        }
+        if (pegi.rating && [7,8,9,10,11].includes(pegi.rating)) {
+          const map = { 7: '3', 8: '7', 9: '12', 10: '16', 11: '18' };
+          return [`PEGI: ${map[pegi.rating]}`];
+        }
+      }
+    }
+    const n = (g.name || '').toLowerCase();
+    if (n.includes('counter-strike') || n.includes('cs2') || n.includes('cs:go')) return ['PEGI: 18'];
+    if (g.genres?.some(gg => ['Shooter', 'Horror', 'Action'].includes(gg.name))) return ['PEGI: 18'];
+    if (n.includes('minecraft') || n.includes('lego')) return ['PEGI: 7'];
+    if (n.includes('fifa') || n.includes('nba') || n.includes('pes')) return ['PEGI: 3'];
+    return ['PEGI: 12'];
+  })();
+  return {
+    id: g.id,
+    name: g.name,
+    genres,
+    platforms: plats,
+    release_date: g.release_dates?.[0]?.date ? new Date(g.release_dates[0].date * 1000).toISOString().split('T')[0] : 'N/A',
+    rating: Math.round(g.aggregated_rating || g.rating || 0) || 'N/A',
+    rating_type: g.aggregated_rating ? 'Critics' : 'Users',
+    cover_image: await getGameCover(g.name, plats, cover),
+    age_ratings: ageRatings,
+    summary: g.summary || 'N/A',
+    developers: g.involved_companies && g.involved_companies.length > 0
+      ? g.involved_companies.filter(c => c.developer || c.publisher).map(c => c.company?.name).filter(Boolean).slice(0,3)
+      : [],
+    videos: videos,
+    similar_games: similar,
+    favorite: favoriteCount,
+    playing: gameStatusCounts.playing,
+    ill_play: gameStatusCounts.ill_play,
+    passed: gameStatusCounts.passed,
+    postponed: gameStatusCounts.postponed,
+    abandoned: gameStatusCounts.abandoned
+  };
+}
+// -------- Routes --------
+app.get('/health', (req, res) => res.json({ status: 'OK' }));
+app.get('/popular', async (req, res) => {
+  console.log('/popular requested');
+  const limit = parseInt(req.query.limit) || 10;
+  const body = `fields id,name,cover.url,aggregated_rating,rating,release_dates.date,genres.name,platforms.name; where aggregated_rating >= 80 & aggregated_rating_count > 5; sort aggregated_rating desc; limit ${limit};`;
+  try {
+    const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+    const games = await Promise.all(r.data.map(processPopularGame));
+    res.json(games);
+  } catch (err) {
+    console.error('/popular ERROR:', err.message, err.response?.status, err.response?.data);
+    if (err.response?.status === 401) {
+      try { await refreshAccessToken(); } catch(e){/* ignore */ }
+    }
+    res.status(500).json({ error: 'IGDB error' });
+  }
 });
+app.get('/search', async (req, res) => {
+  console.log('/search requested');
+  const q = req.query.query;
+  const limit = parseInt(req.query.limit) || 10;
+  const offset = parseInt(req.query.offset) || 0;
+  if (!q) return res.status(400).json({ error: 'Query required' });
+
+  const searchQuery = q.trim();
+  // Разбиваем на слова и фильтруем только очень короткие слова (меньше 2 символов)
+  const searchTerms = searchQuery.toLowerCase().split(/\s+/).filter(term => term.length > 1);
+  
+  try {
+    // Делаем несколько запросов для более гибкого поиска (как в newsTPV)
+    const searchQueries = [];
+    
+    // 1. Основной запрос с полным текстом
+    searchQueries.push(searchQuery);
+    
+    // 1b. Если запрос - известная аббревиатура, добавляем поиск по полному названию (GTA, CS и т.д.)
+    const ABBREV_TO_FULL = {
+      gta: 'grand theft auto',
+      cs: 'counter strike',
+      csgo: 'counter strike',
+      cs2: 'counter strike',
+      nfs: 'need for speed',
+      cod: 'call of duty',
+      ac: 'assassin\'s creed',
+      mhw: 'monster hunter'
+    };
+    const fullForm = ABBREV_TO_FULL[searchQuery.toLowerCase()];
+    if (fullForm && !searchQueries.includes(fullForm)) {
+      searchQueries.push(fullForm);
+    }
+    
+    // 2. Если запрос содержит несколько слов, добавляем запросы для отдельных слов
+    if (searchTerms.length > 1) {
+      // Добавляем запросы для основных слов (игнорируя короткие слова типа "of")
+      const mainTerms = searchTerms.filter(term => term.length > 2);
+      if (mainTerms.length > 0) {
+        // Добавляем самое длинное слово для более широкого поиска
+        const longestTerm = mainTerms.reduce((a, b) => a.length > b.length ? a : b);
+        if (longestTerm !== searchQuery.toLowerCase()) {
+          searchQueries.push(longestTerm);
+        }
+      }
+    } else if (searchTerms.length === 1) {
+      // Если запрос состоит из одного слова, добавляем поиск по частичному совпадению
+      const singleTerm = searchTerms[0];
+      // Если запрос длиннее 4 символов, делаем дополнительные запросы для частичного поиска
+      if (singleTerm.length >= 4) {
+        // Добавляем поиск по нескольким префиксам для лучшего покрытия
+        // Для "minecra" (7 символов) делаем запросы: "mine" (4), "minec" (5), "minecr" (6)
+        const prefixes = [];
+        
+        // Добавляем префикс из 4 символов
+        if (singleTerm.length >= 4) {
+          prefixes.push(singleTerm.substring(0, 4));
+        }
+        // Добавляем префикс из 5 символов (если запрос длиннее 5)
+        if (singleTerm.length >= 5) {
+          prefixes.push(singleTerm.substring(0, 5));
+        }
+        // Добавляем префикс из 6 символов (если запрос длиннее 6)
+        if (singleTerm.length >= 6) {
+          prefixes.push(singleTerm.substring(0, 6));
+        }
+        
+        // Добавляем уникальные префиксы в поисковые запросы
+        for (const prefix of prefixes) {
+          if (prefix !== singleTerm && prefix.length >= 4 && !searchQueries.includes(prefix)) {
+            searchQueries.push(prefix);
+          }
+        }
+      }
+    }
+    
+    // Выполняем запросы параллельно для лучшей производительности
+    // Увеличиваем лимит, чтобы получить больше результатов от IGDB (они сами фильтруют по релевантности)
+    const requests = searchQueries.map((query) => {
+      const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,rating,rating_count,summary,platforms.name,release_dates.date,genres.name; search "${query}"; limit ${Math.max(limit * 3, 100)};`;
+      return axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 })
+        .catch(err => {
+          console.error(`Search query "${query}" error:`, err.message);
+          return { data: [] }; // Возвращаем пустой результат при ошибке
+        });
+    });
+    
+    const responses = await Promise.all(requests);
+    
+    // Объединяем результаты из всех запросов
+    const allGames = [];
+    const gamesMap = new Map(); // Для дедупликации по ID
+    
+    for (const response of responses) {
+      if (response.data && Array.isArray(response.data)) {
+        for (const game of response.data) {
+          if (!gamesMap.has(game.id)) {
+            gamesMap.set(game.id, game);
+            allGames.push(game);
+          }
+        }
+      }
+    }
+    
+    // Если основной поиск дал мало результатов и запрос состоит из одного слова,
+    // пробуем найти игры через более широкий поиск и фильтруем их
+    if (allGames.length < limit * 2 && searchTerms.length === 1) {
+      const singleTerm = searchTerms[0].toLowerCase();
+      // Делаем дополнительный поиск с первыми символами для частичного совпадения
+      if (singleTerm.length >= 4) {
+        try {
+          // Используем префикс "mine" (4 символа) для более широкого поиска
+          // Это должно найти "Minecraft", так как "minecraft" начинается с "mine"
+          const prefixQuery = singleTerm.substring(0, 4);
+          
+          // Проверяем, не делали ли мы уже этот запрос
+          if (!searchQueries.includes(prefixQuery)) {
+            const fallbackBody = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,rating,rating_count,summary,platforms.name,release_dates.date,genres.name; search "${prefixQuery}"; limit 500;`;
+            const fallbackResponse = await axios.post(igdbUrl, fallbackBody, { headers: igdbHeaders, timeout: 10000 })
+              .catch(() => ({ data: [] }));
+            
+            if (fallbackResponse.data && Array.isArray(fallbackResponse.data)) {
+              // Строгая фильтрация - ищем игры, где название содержит запрос как подстроку
+              // Это позволит "minecra" найти "minecraft"
+              const filteredGames = fallbackResponse.data.filter(game => {
+                const nameLower = (game.name || '').toLowerCase();
+                const nameWords = nameLower.split(/\s+/);
+                
+                // Проверяем, содержит ли название запрос как подстроку (важно для "minecra" -> "minecraft")
+                if (nameLower.includes(singleTerm)) return true;
+                
+                // Проверяем, начинается ли любое слово в названии с запроса
+                if (nameWords.some(word => word.startsWith(singleTerm))) return true;
+                
+                // Проверяем, начинается ли название с запроса
+                if (nameLower.startsWith(singleTerm)) return true;
+                
+                return false;
+              });
+              
+              for (const game of filteredGames) {
+                if (!gamesMap.has(game.id)) {
+                  gamesMap.set(game.id, game);
+                  allGames.push(game);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Fallback search error:', err.message);
+        }
+      }
+    }
+    
+    // IGDB сам возвращает релевантные результаты, но дополнительно фильтруем для точности
+    // Оставляем игры, которые хотя бы частично соответствуют запросу
+    const queryLower = searchQuery.toLowerCase();
+    // Популярные аббревиатуры -> полные названия (IGDB находит по alternative_names, но локальный фильтр проверяет только main name)
+    const ABBREVIATIONS = {
+      gta: ['grand theft auto'],
+      cs: ['counter-strike', 'counter strike'],
+      csgo: ['counter-strike', 'counter strike'],
+      cs2: ['counter-strike', 'counter strike'],
+      nfs: ['need for speed'],
+      ac: ['assassin\'s creed', 'assassins creed'],
+      cod: ['call of duty'],
+      fifa: ['fifa'],
+      lol: ['league of legends'],
+      wow: ['world of warcraft'],
+      pokemon: ['pokemon', 'pokémon'],
+      tekken: ['tekken'],
+      mhw: ['monster hunter']
+    };
+    const filteredGames = allGames.filter(game => {
+      const nameLower = (game.name || '').toLowerCase();
+      const nameWords = nameLower.split(/\s+/);
+      
+      // Игра подходит, если:
+      // 1. Название содержит запрос как подстроку (самое важное для частичного поиска)
+      // Это позволит "minecra" найти "minecraft"
+      if (nameLower.includes(queryLower)) return true;
+      
+      // 2. Любое слово в названии начинается с запроса (важно для "minecra" -> "minecraft")
+      if (nameWords.some(word => word.startsWith(queryLower))) return true;
+      
+      // 3. Название начинается с запроса
+      if (nameLower.startsWith(queryLower)) return true;
+      
+      // 4. Запрос - известная аббревиатура и название содержит полную форму (GTA -> Grand Theft Auto)
+      const expansions = ABBREVIATIONS[queryLower];
+      if (expansions && expansions.some(exp => nameLower.includes(exp))) return true;
+      
+      // 5. Для многословных запросов - хотя бы одно слово должно совпадать
+      if (searchTerms.length > 1) {
+        // Проверяем, есть ли хотя бы одно слово, которое совпадает с запросом
+        const hasMatch = searchTerms.some(term => 
+          nameLower.includes(term) || nameWords.some(word => word.startsWith(term))
+        );
+        if (hasMatch) return true;
+      }
+      
+      return false;
+    });
+    
+    // Сортируем результаты по релевантности (основные игры серии выше модов/фанатских)
+    const gamesWithScore = filteredGames.map(game => {
+      const nameLower = (game.name || '').toLowerCase();
+      const nameWords = nameLower.split(/\s+/);
+      let score = 0;
+      
+      // Популярность: больше оценок = более известная игра (GTA 5 vs моды)
+      const ratingCount = game.aggregated_rating_count ?? game.rating_count ?? 0;
+      score += Math.min(ratingCount / 50, 60); // до +60 за популярность
+      
+      // Штраф за длинные названия (моды/фанатские: "Super Mario 64 in GTA San Andreas")
+      if (nameWords.length > 5) score -= 40;
+      else if (nameWords.length > 4) score -= 20;
+      
+      // Аббревиатура: название НАЧИНАЕТСЯ с франшизы = основная игра серии
+      const expansions = ABBREVIATIONS[queryLower];
+      if (expansions) {
+        const startsWithFranchise = expansions.some(exp => nameLower.startsWith(exp));
+        const containsButNotStart = expansions.some(exp => nameLower.includes(exp) && !nameLower.startsWith(exp));
+        if (startsWithFranchise) score += 120;   // GTA V, GTA 6 — главные игры
+        else if (containsButNotStart) score -= 30; // "X in GTA San Andreas" — мод
+      }
+      
+      // Бонус за точное совпадение названия
+      if (nameLower === queryLower) score += 100;
+      // Бонус за начало названия с запросом (самый важный для частичного поиска)
+      else if (nameLower.startsWith(queryLower)) score += 80;
+      // Бонус за начало любого слова в названии с запросом
+      else if (nameWords.some(word => word.startsWith(queryLower))) score += 70;
+      // Бонус за содержание запроса в названии
+      else if (nameLower.includes(queryLower)) score += 50;
+      
+      // Бонус за количество совпадающих слов в названии
+      const matchedWords = searchTerms.filter(term => 
+        nameLower.includes(term) || nameWords.some(w => w.startsWith(term))
+      );
+      score += matchedWords.length * 10;
+      
+      // Дополнительный бонус, если слово в названии полностью содержит запрос
+      // Например, "minecraft" содержит "minecra" - это должно быть выше, чем "minecart"
+      // Важно: проверяем, что слово начинается с запроса или содержит запрос и продолжается
+      const wordWithQuery = nameWords.find(word => 
+        word.includes(queryLower) && word.length > queryLower.length
+      );
+      if (wordWithQuery) {
+        // Если слово начинается с запроса - это самое точное совпадение
+        if (wordWithQuery.startsWith(queryLower)) {
+          score += 60; // Очень большой бонус за игры, где слово начинается с запроса
+        } else if (wordWithQuery.includes(queryLower)) {
+          score += 40; // Большой бонус за игры, где слово содержит запрос и продолжается
+        }
+      }
+      
+      // Бонус за рейтинг (игры с рейтингом выше получают небольшой бонус)
+      if (game.aggregated_rating) score += game.aggregated_rating / 10;
+      
+      return { ...game, _relevanceScore: score };
+    });
+    
+    // Сортируем по релевантности, затем по популярности (кол-во оценок), затем по рейтингу
+    gamesWithScore.sort((a, b) => {
+      if (b._relevanceScore !== a._relevanceScore) {
+        return b._relevanceScore - a._relevanceScore;
+      }
+      // Если релевантность одинаковая — по популярности (больше оценок = популярнее)
+      const aCount = a.aggregated_rating_count ?? a.rating_count ?? 0;
+      const bCount = b.aggregated_rating_count ?? b.rating_count ?? 0;
+      if (bCount !== aCount) return bCount - aCount;
+      const aRating = a.aggregated_rating || a.rating || 0;
+      const bRating = b.aggregated_rating || b.rating || 0;
+      return bRating - aRating;
+    });
+    
+    // Берем топ результатов и обрабатываем их
+    const topGames = gamesWithScore.slice(0, limit * 2).map(({ _relevanceScore, ...game }) => game);
+    
+    // Обрабатываем игры через processSearchGame
+    const processedGames = await Promise.all(topGames.map(processSearchGame));
+    
+    // Вычисляем релевантность на основе обработанных данных
+    const gamesWithRelevance = processedGames.map(game => {
+      const nameLower = (game.name || '').toLowerCase();
+      let score = 0;
+      
+      // Бонус за точное совпадение названия
+      if (nameLower === queryLower) score += 100;
+      // Бонус за начало названия с запросом
+      else if (nameLower.startsWith(queryLower)) score += 50;
+      // Бонус за содержание запроса в названии
+      else if (nameLower.includes(queryLower)) score += 30;
+      
+      // Бонус за количество совпадающих слов в названии
+      const nameWords = nameLower.split(/\s+/);
+      const matchedWords = searchTerms.filter(term => nameWords.some(w => w.includes(term.toLowerCase())));
+      score += matchedWords.length * 5;
+      
+      // Бонус за рейтинг
+      const rating = typeof game.rating === 'number' ? game.rating : 0;
+      score += rating / 10;
+      
+      return { ...game, _relevanceScore: score };
+    });
+    
+    // Сортируем по релевантности, затем по рейтингу
+    gamesWithRelevance.sort((a, b) => {
+      if (b._relevanceScore !== a._relevanceScore) {
+        return b._relevanceScore - a._relevanceScore;
+      }
+      const aRating = typeof a.rating === 'number' ? a.rating : 0;
+      const bRating = typeof b.rating === 'number' ? b.rating : 0;
+      return bRating - aRating;
+    });
+    
+    // Убираем временное поле score, применяем пагинацию
+    const total = gamesWithRelevance.length;
+    const finalGames = gamesWithRelevance
+      .slice(offset, offset + limit)
+      .map(({ _relevanceScore, ...game }) => game);
+    const hasMore = offset + finalGames.length < total;
+    
+    res.json({ data: finalGames, pagination: { hasMore, total, offset } });
+  } catch (err) {
+    console.error('/search ERROR:', err.message, err.response?.status, err.response?.data);
+    if (err.response?.status === 401) {
+      try { 
+        await refreshAccessToken(); 
+        // Пробуем повторить запрос после обновления токена
+        const body = `fields id,name,cover.url,aggregated_rating,rating,summary,platforms.name,release_dates.date,genres.name; search "${searchQuery}"; limit ${limit};`;
+        const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+        const games = await Promise.all(r.data.map(processSearchGame));
+        const pageGames = games.slice(offset, offset + limit);
+        return res.json({ data: pageGames, pagination: { hasMore: offset + pageGames.length < games.length, total: games.length, offset } });
+      } catch(e) {
+        console.error('Retry after token refresh failed:', e.message);
+      }
+    }
+    res.status(500).json({ error: 'IGDB error' });
+  }
+});
+app.get('/games', async (req, res) => {
+  console.log('/games requested');
+  const limit = parseInt(req.query.limit) || 5;
+  const page = parseInt(req.query.page) || 1;
+  const offset = (page - 1) * 50;
+  const hist = historyCache.get(historyKey) || [];
+  const excl = hist.length ? `where id != (${hist.join(',')});` : '';
+  const body = `fields id,name,cover.url,aggregated_rating,release_dates.date,genres.name,platforms.name; ${excl} limit 50; offset ${offset};`;
+  try {
+    const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+    if (!r.data.length) { historyCache.set(historyKey, []); return res.status(404).json({ error: 'No games' }); }
+    const shuffled = weightedShuffle(r.data, hist);
+    const selected = shuffled.slice(0, limit);
+    updateHistory(selected.map(g => g.id));
+    const games = await Promise.all(selected.map(processPopularGame));
+    res.json(games);
+  } catch (err) {
+    console.error('/games ERROR:', err.message, err.response?.status, err.response?.data);
+    if (err.response?.status === 401) {
+      try { await refreshAccessToken(); } catch(e){/* ignore */ }
+    }
+    res.status(500).json({ error: 'IGDB error' });
+  }
+});
+app.get('/games/:id', async (req, res) => {
+  const id = req.params.id;
+  if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'Invalid ID' });
+  
+  // Проверяем кэш
+  const cacheKey = `game_${id}`;
+  const cached = gameCache.get(cacheKey);
+  if (cached) {
+    console.log(`[GET /games/${id}] Cache hit`);
+    return res.json(cached);
+  }
+  
+  const body = `fields id,name,genres.name,platforms.name,release_dates.date,aggregated_rating,rating,cover.url,age_ratings.*,summary,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,videos.video_id,similar_games.id,similar_games.name,similar_games.cover.url,similar_games.aggregated_rating,similar_games.release_dates.date,similar_games.genres.name,similar_games.platforms.name;where id = ${id}; limit 1;`;
+  
+  // Функция для выполнения запроса с повторными попытками
+  const fetchGameWithRetry = async (maxRetries = 3) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`[GET /games/${id}] Attempt ${attempt}/${maxRetries}`);
+        const r = await axios.post(igdbUrl, body, { 
+          headers: igdbHeaders, 
+          timeout: 15000 // Увеличен таймаут до 15 секунд
+        });
+        
+        if (!r.data.length) {
+          return { error: 'Game not found', status: 404 };
+        }
+        
+        const game = await processGame(r.data[0]);
+        // Сохраняем в кэш
+        gameCache.set(cacheKey, game, 3600); // 1 час
+        return { game };
+      } catch (err) {
+        console.error(`[GET /games/${id}] Attempt ${attempt} failed:`, err.response?.status || err.message);
+        
+        // Если токен истек, обновляем и повторяем
+        if (err.response?.status === 401) {
+          try {
+            await refreshAccessToken();
+            // Продолжаем попытку после обновления токена
+            continue;
+          } catch (tokenErr) {
+            console.error(`[GET /games/${id}] Token refresh failed:`, tokenErr.message);
+            if (attempt === maxRetries) {
+              return { error: 'Authentication failed', status: 500 };
+            }
+          }
+        }
+        
+        // Для других ошибок делаем задержку перед повторной попыткой
+        if (attempt < maxRetries) {
+          const delay = Math.min(1000 * attempt, 3000); // Экспоненциальная задержка, максимум 3 секунды
+          console.log(`[GET /games/${id}] Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          return { error: err.response?.data?.message || err.message || 'IGDB error', status: err.response?.status || 500 };
+        }
+      }
+    }
+  };
+  
+  try {
+    const result = await fetchGameWithRetry();
+    
+    if (result.error) {
+      return res.status(result.status || 500).json({ error: result.error });
+    }
+    
+    res.json(result.game);
+  } catch (err) {
+    console.error('/games/:id FATAL ERROR:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+// ---------- Favorite endpoints (как в коммите 80f5e36) ----------
+// GET /games/:id/favorite - получить счетчик избранного
+app.get('/games/:id/favorite', authenticate, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const count = getFavoriteCount(gameId);
+    res.json({ favorite: count });
+  } catch (error) {
+    console.error('Error /games/:id/favorite (GET):', error.message);
+    res.status(500).json({ error: 'Failed to get favorite count' });
+  }
+});
+
+// POST /games/:id/favorite - увеличить счетчик избранного (+1) и сохранить в Firestore для рекомендаций
+app.post('/games/:id/favorite', authenticate, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const newCount = updateFavoriteCount(gameId, 1);
+    await addUserFavorite(req.user.uid, gameId);
+    console.log(`[POST /games/${gameId}/favorite] Favorite count: ${newCount}`);
+    res.json({ favorite: newCount });
+  } catch (error) {
+    console.error('Error /games/:id/favorite (POST):', error.message);
+    res.status(500).json({ error: 'Failed to increment favorite count: ' + error.message });
+  }
+});
+
+// DELETE /games/:id/favorite - уменьшить счетчик избранного (-1) и удалить из Firestore
+app.delete('/games/:id/favorite', authenticate, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const newCount = updateFavoriteCount(gameId, -1);
+    await removeUserFavorite(req.user.uid, gameId);
+    console.log(`[DELETE /games/${gameId}/favorite] Favorite count: ${newCount}`);
+    res.json({ favorite: newCount });
+  } catch (error) {
+    console.error('Error /games/:id/favorite (DELETE):', error.message);
+    res.status(500).json({ error: 'Failed to decrement favorite count: ' + error.message });
+  }
+});
+// ---------- Status endpoints (как в коммите 80f5e36) ----------
+const validStatuses = ['playing', 'ill_play', 'passed', 'postponed', 'abandoned'];
+
+// POST /games/:id/status/:status - увеличить счетчик статуса (+1)
+app.post('/games/:id/status/:status', authenticate, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const status = req.params.status.toLowerCase();
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    const newCount = updateStatusCount(gameId, status, 1);
+    console.log(`[POST /games/${gameId}/status/${status}] Status count: ${newCount}`);
+    res.json({ [status]: newCount });
+  } catch (error) {
+    console.error(`Error /games/:id/status/:status (POST):`, error.message);
+    res.status(500).json({ error: `Failed to increment ${req.params.status} count: ` + error.message });
+  }
+});
+
+// DELETE /games/:id/status/:status - уменьшить счетчик статуса (-1)
+app.delete('/games/:id/status/:status', authenticate, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const status = req.params.status.toLowerCase();
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    const newCount = updateStatusCount(gameId, status, -1);
+    console.log(`[DELETE /games/${gameId}/status/${status}] Status count: ${newCount}`);
+    res.json({ [status]: newCount });
+  } catch (error) {
+    console.error(`Error /games/:id/status/:status (DELETE):`, error.message);
+    res.status(500).json({ error: `Failed to decrement ${req.params.status} count: ` + error.message });
+  }
+});
+
+// DELETE /games/:id/status - сбросить все счетчики статусов в 0
+app.delete('/games/:id/status', authenticate, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const resetCounts = resetAllStatusCounts(gameId);
+    console.log(`[DELETE /games/${gameId}/status] All status counts reset to 0`);
+    res.json(resetCounts);
+  } catch (error) {
+    console.error(`Error /games/:id/status (DELETE):`, error.message);
+    res.status(500).json({ error: 'Failed to reset statuses: ' + error.message });
+  }
+});
+
+// -------- Личные рекомендации (пагинация: limit по умолчанию 4, page) --------
+const RECOMMENDATIONS_RANDOM60_CACHE_TTL = 600;      // 10 мин — кэш пула «рейтинг > 60, случайный порядок»
+const RECOMMENDATIONS_SIMILAR_CACHE_TTL = 300;       // 5 мин — кэш похожих ID по пользователю
+const RANDOM_60_POOL_SIZE = 400;                      // сколько игр с рейтингом > 60 держать в пуле
+
+// Пул ID «рейтинг > 60» (без порядка — порядок задаётся при отдаче)
+async function getRandomRating60PoolIds() {
+  const cacheKey = 'recommendations_random_60_pool';
+  const cached = cache.get(cacheKey);
+  if (cached && Array.isArray(cached) && cached.length > 0) {
+    return cached;
+  }
+  const fields = 'fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name';
+  const body = `${fields}; where aggregated_rating > 60; limit ${RANDOM_60_POOL_SIZE};`;
+  try {
+    const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 15000 });
+    const ids = (r.data || []).map(g => g.id).filter(Boolean);
+    if (ids.length > 0) {
+      cache.set(cacheKey, ids, RECOMMENDATIONS_RANDOM60_CACHE_TTL);
+    }
+    return ids;
+  } catch (e) {
+    console.warn('[getRandomRating60PoolIds]', e.message);
+    return [];
+  }
+}
+
+// Для гостей и пользователей без избранного: порядок перемешан (при чтении из кэша тоже перемешиваем)
+async function getRandomRating60PlusIds(userId) {
+  const pool = await getRandomRating60PoolIds();
+  if (pool.length === 0) return [];
+  if (userId) {
+    const orderKey = `recommendations_random_60_order_${userId}`;
+    let order = cache.get(orderKey);
+    if (!order || !Array.isArray(order)) {
+      order = shuffleArray(pool);
+      cache.set(orderKey, order, RECOMMENDATIONS_RANDOM60_CACHE_TTL);
+    }
+    return order;
+  }
+  return shuffleArray(pool);
+}
+
+// GET /recommendations?limit=4&page=1 — для авторизованных с избранным: похожие; иначе игры с рейтингом > 60 в случайном порядке
+app.get('/recommendations', optionalAuthenticate, async (req, res) => {
+  const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 4), 20);
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const offset = (page - 1) * limit;
+
+  try {
+    const userId = req.user ? req.user.uid : null;
+    const favoriteIds = userId ? await getUserFavoriteGameIds(userId) : [];
+    const favoriteSet = new Set(favoriteIds.map(String));
+
+    // Не зарегистрирован или нет избранного — игры с рейтингом > 60 в случайном порядке
+    if (!userId || favoriteIds.length === 0) {
+      const allIds = await getRandomRating60PlusIds(userId);
+      const pageIds = allIds.slice(offset, offset + limit);
+      if (pageIds.length === 0) {
+        return res.json({ source: 'random_60', games: [], hasMore: false });
+      }
+      const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
+      const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+      const orderMap = new Map(pageIds.map((id, i) => [String(id), i]));
+      const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
+      const games = await Promise.all(sorted.map(processPopularGame));
+      const hasMore = offset + games.length < allIds.length;
+      return res.json({ source: 'random_60', games, hasMore });
+    }
+
+    // Список похожих ID по пользователю (кэш 5 мин — чтобы пагинация не дергала IGDB заново)
+    const similarCacheKey = `recommendations_similar_${userId}`;
+    let allRecommendedIds = cache.get(similarCacheKey);
+    if (!allRecommendedIds || !Array.isArray(allRecommendedIds)) {
+      const idsToQuery = favoriteIds.slice(0, 15);
+      const multiBody = idsToQuery
+        .map(id => `fields similar_games.id; where id = ${id}; limit 1;`)
+        .join('\n');
+      const responses = await axios.post(igdbUrl, multiBody, { headers: igdbHeaders, timeout: 12000 });
+      const results = Array.isArray(responses.data[0]) ? responses.data : [responses.data];
+      const similarCount = {};
+      for (const arr of results) {
+        if (!Array.isArray(arr)) continue;
+        for (const game of arr) {
+          const similar = game.similar_games || [];
+          for (const s of similar) {
+            if (s && s.id && !favoriteSet.has(String(s.id))) {
+              similarCount[s.id] = (similarCount[s.id] || 0) + 1;
+            }
+          }
+        }
+      }
+      const sorted = Object.entries(similarCount)
+        .sort((a, b) => b[1] - a[1])
+        .map(([id]) => id);
+      allRecommendedIds = shuffleArray(sorted);
+      if (allRecommendedIds.length > 0) {
+        cache.set(similarCacheKey, allRecommendedIds, RECOMMENDATIONS_SIMILAR_CACHE_TTL);
+      }
+    }
+
+    const pageIds = allRecommendedIds.slice(offset, offset + limit);
+
+    if (pageIds.length === 0) {
+      // Нет похожих на этой странице — fallback: игры с рейтингом > 60 в случайном порядке
+      const allIds = await getRandomRating60PlusIds(userId);
+      const fallbackIds = allIds.slice(offset, offset + limit);
+      if (fallbackIds.length === 0) {
+        return res.json({ source: 'random_60', games: [], hasMore: false });
+      }
+      const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name; where id = (${fallbackIds.join(',')});`;
+      const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+      const orderMap = new Map(fallbackIds.map((id, i) => [String(id), i]));
+      const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
+      const games = await Promise.all(sorted.map(processPopularGame));
+      return res.json({ source: 'random_60', games, hasMore: offset + games.length < allIds.length });
+    }
+
+    const body = `fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name; where id = (${pageIds.join(',')});`;
+    const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
+    const orderMap = new Map(pageIds.map((id, i) => [String(id), i]));
+    const sorted = (r.data || []).slice().sort((a, b) => (orderMap.get(String(a.id)) ?? 999) - (orderMap.get(String(b.id)) ?? 999));
+    const games = await Promise.all(sorted.map(processPopularGame));
+    const hasMore = offset + games.length < allRecommendedIds.length;
+
+    res.json({ source: 'similar', games, hasMore });
+  } catch (err) {
+    console.error('/recommendations ERROR:', err.message, err.response?.status);
+    if (err.response?.status === 401) {
+      try {
+        await refreshAccessToken();
+      } catch (e) { /* ignore */ }
+    }
+    res.status(500).json({ error: 'Recommendations error' });
+  }
+});
+
+// GET /games/tops/daily?date=YYYY-MM-DD — недельные топы (обновляются по понедельникам; date = любая дата недели)
+app.get('/games/tops/daily', async (req, res) => {
+  const dateStr = (req.query.date || '').trim() || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return res.status(400).json({ error: 'Invalid date, use YYYY-MM-DD' });
+  }
+  try {
+    const data = await buildWeeklyTopsForDate(dateStr);
+    res.json({ date: data.weekStart || data.date, tops: data.tops });
+  } catch (err) {
+    console.error('/games/tops/daily ERROR:', err.message);
+    res.status(500).json({ error: 'Failed to load weekly tops' });
+  }
+});
+
+// GET /games/compilations/daily?date=YYYY-MM-DD — недельные подборки (то же, что топы)
+app.get('/games/compilations/daily', async (req, res) => {
+  const dateStr = (req.query.date || '').trim() || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return res.status(400).json({ error: 'Invalid date, use YYYY-MM-DD' });
+  }
+  try {
+    const data = await buildWeeklyTopsForDate(dateStr);
+    res.json({ date: data.weekStart || data.date, compilations: data.compilations });
+  } catch (err) {
+    console.error('/games/compilations/daily ERROR:', err.message);
+    res.status(500).json({ error: 'Failed to load weekly compilations' });
+  }
+});
+
+// GET /tops/feed?date=YYYY-MM-DD — лента для вкладки «Топ игр»: 10 блоков в порядке неосновной, основной, … (4 основных + 6 неосновных)
+// Внешний nginx проксирует /games/tops/feed -> /tops/feed на этом сервисе.
+app.get('/tops/feed', async (req, res) => {
+  const dateStr = (req.query.date || '').trim() || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return res.status(400).json({ error: 'Invalid date, use YYYY-MM-DD' });
+  }
+  try {
+    const feed = await getTopsFeed(dateStr);
+    res.json({ date: dateStr, feed });
+  } catch (err) {
+    console.error('/games/tops/feed ERROR:', err.message);
+    res.status(500).json({ error: 'Failed to load tops feed' });
+  }
+});
+
+// -------- Start server --------
+const server = app.listen(PORT, async () => {
+  console.log(`Server running on port ${PORT} at ${new Date().toISOString()}`);
+  const publicUrl = process.env.PUBLIC_URL || '';
+  if (publicUrl) console.log('Using PUBLIC_URL for keep-alive:', publicUrl);
+  try {
+    // Test Firebase Auth (только для проверки токенов пользователей)
+    const authOk = await testFirebaseConnection();
+    if (!authOk) {
+      console.log('⚠ Firebase Auth недоступен - аутентификация не будет работать');
+    } else {
+      console.log('✓ Firebase Auth работает - проверка токенов пользователей доступна');
+      console.log('  Счетчики избранного будут работать если Firestore доступен');
+      console.log('  Избранное всегда работает через Firebase для каждого пользователя');
+    }
+    await refreshAccessToken().catch(e => { console.warn('Initial token refresh failed:', e.message); });
+    await getSteamApps().catch(e => { console.warn('Initial steam apps fetch failed:', e.message); });
+    scheduleKeepAlive(publicUrl);
+  } catch (e) {
+    console.error('Initial setup failed:', e.message);
+  }
+});
+process.on('SIGTERM', () => {
+  server.close(() => {
+    console.log(`Server terminated at ${new Date().toISOString()}`);
+  });
+});
+module.exports = app;
