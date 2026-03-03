@@ -371,6 +371,12 @@ async function buildMainTops(weekKey) {
         const sorted = (raw || []).sort((a, b) => (orderMap.get(a.id) ?? 999) - (orderMap.get(b.id) ?? 999));
         games = sorted.length ? stripPlatforms(await Promise.all(sorted.map(processPopularGame))) : [];
       }
+      // Если пока нет комментариев или игр по ним, используем популярные игры как мягкий фолбэк
+      if (games.length === 0) {
+        const fallbackBody = `${fieldsBase}; where aggregated_rating >= 75 & aggregated_rating_count > 20; sort aggregated_rating desc; limit ${MAIN_TOPS_PER_BLOCK};`;
+        const rawFallback = await fetchIgdbGames(fallbackBody).catch(() => []);
+        games = rawFallback.length ? stripPlatforms(await Promise.all(rawFallback.map(processPopularGame))) : [];
+      }
       main.push({ id: def.id, title: def.title, type: 'main', games });
     } else if (def.id === 'top_year') {
       const body = `${fieldsBase}; where first_release_date >= ${yearStart} & first_release_date <= ${yearEnd} & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${MAIN_TOPS_PER_BLOCK};`;
@@ -434,11 +440,23 @@ async function buildNonMainTops(dateStr) {
       const next = THEMES_ROTATION.find(tt => !usedThemeIds.has(tt.id));
       if (!next) break;
       usedThemeIds.add(next.id);
-      const themeGames = await fetchThemeGames(next.search);
+      let themeGames = await fetchThemeGames(next.search);
+      // Если по теме совсем нет игр, используем общий популярный фолбэк,
+      // чтобы блок не был пустым.
+      if (!themeGames || themeGames.length === 0) {
+        const fallbackBody = `${fieldsBase}; where aggregated_rating >= 70 & aggregated_rating_count >= 10; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
+        const rawFallback = await fetchIgdbGames(fallbackBody).catch(() => []);
+        themeGames = rawFallback.length ? stripPlatforms(await Promise.all(rawFallback.map(processPopularGame))) : [];
+      }
       nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeGames });
     } else {
       usedThemeIds.add(t.id);
-      const themeGames = await fetchThemeGames(t.search);
+      let themeGames = await fetchThemeGames(t.search);
+      if (!themeGames || themeGames.length === 0) {
+        const fallbackBody = `${fieldsBase}; where aggregated_rating >= 70 & aggregated_rating_count >= 10; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
+        const rawFallback = await fetchIgdbGames(fallbackBody).catch(() => []);
+        themeGames = rawFallback.length ? stripPlatforms(await Promise.all(rawFallback.map(processPopularGame))) : [];
+      }
       nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeGames });
     }
   }
