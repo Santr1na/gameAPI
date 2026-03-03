@@ -133,13 +133,13 @@ cron.schedule('0 0 * * *', async () => {
 // -------- Недельные топы и подборки (обновляются раз в неделю, опционально с ИИ) --------
 // IGDB genre IDs: 4=Fighting, 5=Shooter, 8=Platform, 9=Puzzle, 10=Racing, 12=RPG, 14=Sport, 15=Strategy, 25=Adventure, 26=Indie, 31=Arcade
 const WEEKLY_TOPS_CACHE_TTL = 86400 * 14; // 2 недели
-const WEEKLY_TOPS_PER_THEME = 10;
+const WEEKLY_TOPS_PER_THEME = 9;
 const FALLBACK_WEEKLY_THEMES = [
-  { id: 'rpg', title: 'Лучшие RPG', genreId: 12 },
-  { id: 'action', title: 'Топ экшенов', genreId: 5 },
-  { id: 'indie', title: 'Инди-хиты', genreId: 26 },
-  { id: 'strategy', title: 'Стратегии', genreId: 15 },
-  { id: 'adventure', title: 'Приключения', genreId: 25 }
+  { id: 'rpg', title: 'Top RPG games', genreId: 12 },
+  { id: 'action', title: 'Top action games', genreId: 5 },
+  { id: 'indie', title: 'Top indie games', genreId: 26 },
+  { id: 'strategy', title: 'Top strategy games', genreId: 15 },
+  { id: 'adventure', title: 'Top adventure games', genreId: 25 }
 ];
 
 /** Возвращает понедельник недели для даты YYYY-MM-DD (ключ недели). */
@@ -205,7 +205,7 @@ async function buildWeeklyTopsForDate(dateStr) {
       const body = `${fields}; where genres = (${genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${WEEKLY_TOPS_PER_THEME};`;
       const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
       const raw = r.data || [];
-      const games = raw.length ? await Promise.all(raw.map(processPopularGame)) : [];
+      const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
       tops.push({
         id: theme.id || `genre_${genreId}`,
         title: theme.title || `Топ ${genreId}`,
@@ -217,15 +217,15 @@ async function buildWeeklyTopsForDate(dateStr) {
           await refreshAccessToken();
           const body = `${fields}; where genres = (${genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${WEEKLY_TOPS_PER_THEME};`;
           const r = await axios.post(igdbUrl, body, { headers: igdbHeaders, timeout: 10000 });
-          const games = (r.data || []).length ? await Promise.all((r.data || []).map(processPopularGame)) : [];
+          const games = (r.data || []).length ? stripPlatforms(await Promise.all((r.data || []).map(processPopularGame))) : [];
           tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Топ ${genreId}`, games });
         } catch (retryErr) {
           console.warn(`[buildWeeklyTops] theme ${theme.title || genreId} failed:`, retryErr.message);
-          tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Топ ${genreId}`, games: [] });
+          tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Top ${genreId}`, games: [] });
         }
       } else {
         console.warn(`[buildWeeklyTops] theme ${theme.title || genreId} failed:`, err.message);
-        tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Топ ${genreId}`, games: [] });
+        tops.push({ id: theme.id || `genre_${genreId}`, title: theme.title || `Top ${genreId}`, games: [] });
       }
     }
   }
@@ -248,47 +248,51 @@ cron.schedule('5 0 * * 1', async () => {
 // -------- Вкладка «Топ игр»: 4 основных (неделя) + 6 неосновных (день), порядок N,M,N,M,N,M,N,M,N,N --------
 const TOPS_FEED_MAIN_CACHE_TTL = 86400 * 14;
 const TOPS_FEED_NON_MAIN_CACHE_TTL = 86400 * 2;
-const TOPS_FEED_PER_BLOCK = 15;
+const TOPS_FEED_PER_BLOCK = 9;
 const fieldsBase = 'fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name';
 
 const MAIN_TOPS = [
-  { id: 'all_time', title: 'Лучшие игры всех времён', type: 'main' },
-  { id: 'new_releases', title: 'Топ новинок', type: 'main' },
-  { id: 'discussed', title: 'Топ обсуждаемых', type: 'main' },
-  { id: 'top_year', title: 'Топ года', type: 'main' }
+  { id: 'all_time', title: 'Best games of all time', type: 'main' },
+  { id: 'new_releases', title: 'Top new releases', type: 'main' },
+  { id: 'discussed', title: 'Top discussed games', type: 'main' },
+  { id: 'top_year', title: 'Top games of the year', type: 'main' }
 ];
 
 const GENRES_ROTATION = [
-  { id: 'rpg', title: 'Топ RPG', genreId: 12 },
-  { id: 'shooter', title: 'Топ шутеров', genreId: 5 },
-  { id: 'indie', title: 'Топ инди', genreId: 26 },
-  { id: 'strategy', title: 'Топ стратегий', genreId: 15 },
-  { id: 'adventure', title: 'Топ приключений', genreId: 25 },
-  { id: 'racing', title: 'Топ гонок', genreId: 10 },
-  { id: 'fighting', title: 'Топ файтингов', genreId: 4 },
-  { id: 'platform', title: 'Топ платформеров', genreId: 8 },
-  { id: 'puzzle', title: 'Топ головоломок', genreId: 9 },
-  { id: 'sport', title: 'Топ спортивных', genreId: 14 },
-  { id: 'arcade', title: 'Топ аркад', genreId: 31 }
+  { id: 'rpg', title: 'Top RPG games', genreId: 12 },
+  { id: 'shooter', title: 'Top shooter games', genreId: 5 },
+  { id: 'indie', title: 'Top indie games', genreId: 26 },
+  { id: 'strategy', title: 'Top strategy games', genreId: 15 },
+  { id: 'adventure', title: 'Top adventure games', genreId: 25 },
+  { id: 'racing', title: 'Top racing games', genreId: 10 },
+  { id: 'fighting', title: 'Top fighting games', genreId: 4 },
+  { id: 'platform', title: 'Top platformer games', genreId: 8 },
+  { id: 'puzzle', title: 'Top puzzle games', genreId: 9 },
+  { id: 'sport', title: 'Top sports games', genreId: 14 },
+  { id: 'arcade', title: 'Top arcade games', genreId: 31 }
 ];
 
 const THEMES_ROTATION = [
-  { id: 'prison', title: 'Топ игр про тюрьму', search: 'prison' },
-  { id: 'space', title: 'Топ космических игр', search: 'space' },
-  { id: 'zombies', title: 'Топ игр про зомби', search: 'zombie' },
-  { id: 'war', title: 'Топ военных игр', search: 'war' },
-  { id: 'fantasy', title: 'Топ фэнтези', search: 'fantasy' },
-  { id: 'detective', title: 'Топ детективных игр', search: 'detective' },
-  { id: 'horror', title: 'Топ хорроров', search: 'horror' },
-  { id: 'postapoc', title: 'Топ постапокалипсиса', search: 'post-apocalyptic' },
-  { id: 'medieval', title: 'Топ средневековых игр', search: 'medieval' },
-  { id: 'scifi', title: 'Топ научной фантастики', search: 'sci-fi' },
-  { id: 'survival', title: 'Топ выживания', search: 'survival' },
-  { id: 'stealth', title: 'Топ стелс-игр', search: 'stealth' },
-  { id: 'vampire', title: 'Топ игр про вампиров', search: 'vampire' },
-  { id: 'robot', title: 'Топ игр про роботов', search: 'robot' },
-  { id: 'pirate', title: 'Топ пиратских игр', search: 'pirate' }
+  { id: 'prison', title: 'Top prison games', search: 'prison' },
+  { id: 'space', title: 'Top space games', search: 'space' },
+  { id: 'zombies', title: 'Top zombie games', search: 'zombie' },
+  { id: 'war', title: 'Top war games', search: 'war' },
+  { id: 'fantasy', title: 'Top fantasy games', search: 'fantasy' },
+  { id: 'detective', title: 'Top detective games', search: 'detective' },
+  { id: 'horror', title: 'Top horror games', search: 'horror' },
+  { id: 'postapoc', title: 'Top post-apocalyptic games', search: 'post-apocalyptic' },
+  { id: 'medieval', title: 'Top medieval games', search: 'medieval' },
+  { id: 'scifi', title: 'Top sci-fi games', search: 'sci-fi' },
+  { id: 'survival', title: 'Top survival games', search: 'survival' },
+  { id: 'stealth', title: 'Top stealth games', search: 'stealth' },
+  { id: 'vampire', title: 'Top vampire games', search: 'vampire' },
+  { id: 'robot', title: 'Top robot games', search: 'robot' },
+  { id: 'pirate', title: 'Top pirate games', search: 'pirate' }
 ];
+
+function stripPlatforms(games) {
+  return games.map(({ platforms, ...rest }) => rest);
+}
 
 async function fetchIgdbGames(body) {
   let r;
@@ -320,12 +324,13 @@ async function buildMainTops(weekKey) {
     if (def.id === 'all_time') {
       const body = `${fieldsBase}; where aggregated_rating >= 75 & aggregated_rating_count > 30; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
       const raw = await fetchIgdbGames(body).catch(() => []);
-      const games = raw.length ? await Promise.all(raw.map(processPopularGame)) : [];
+      const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
       main.push({ id: def.id, title: def.title, type: 'main', games });
     } else if (def.id === 'new_releases') {
-      const body = `${fieldsBase}; where first_release_date >= ${thirtyDaysAgo} & aggregated_rating >= 50; sort first_release_date desc; limit ${TOPS_FEED_PER_BLOCK};`;
+      // Только релизы, которые уже вышли (first_release_date <= now) и не старше 30 дней
+      const body = `${fieldsBase}; where first_release_date >= ${thirtyDaysAgo} & first_release_date <= ${now} & aggregated_rating >= 50; sort first_release_date desc; limit ${TOPS_FEED_PER_BLOCK};`;
       const raw = await fetchIgdbGames(body).catch(() => []);
-      const games = raw.length ? await Promise.all(raw.map(processPopularGame)) : [];
+      const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
       main.push({ id: def.id, title: def.title, type: 'main', games });
     } else if (def.id === 'discussed') {
       const db = getDb();
@@ -340,13 +345,13 @@ async function buildMainTops(weekKey) {
         const raw = await fetchIgdbGames(body).catch(() => []);
         const orderMap = new Map(discussedIds.map((id, i) => [id, i]));
         const sorted = (raw || []).sort((a, b) => (orderMap.get(a.id) ?? 999) - (orderMap.get(b.id) ?? 999));
-        games = sorted.length ? await Promise.all(sorted.map(processPopularGame)) : [];
+        games = sorted.length ? stripPlatforms(await Promise.all(sorted.map(processPopularGame))) : [];
       }
       main.push({ id: def.id, title: def.title, type: 'main', games });
     } else if (def.id === 'top_year') {
       const body = `${fieldsBase}; where first_release_date >= ${yearStart} & first_release_date <= ${yearEnd} & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
       const raw = await fetchIgdbGames(body).catch(() => []);
-      const games = raw.length ? await Promise.all(raw.map(processPopularGame)) : [];
+      const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
       main.push({ id: def.id, title: def.title, type: 'main', games });
     }
   }
@@ -368,16 +373,16 @@ async function buildNonMainTops(dateStr) {
   const genreDef = GENRES_ROTATION[genreIndex];
   const genreBody = `${fieldsBase}; where genres = (${genreDef.genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
   const genreRaw = await fetchIgdbGames(genreBody).catch(() => []);
-  const genreGames = genreRaw.length ? await Promise.all(genreRaw.map(processPopularGame)) : [];
+  const genreGames = genreRaw.length ? stripPlatforms(await Promise.all(genreRaw.map(processPopularGame))) : [];
   nonMain.push({ id: genreDef.id, title: genreDef.title, type: 'non_main', games: genreGames });
 
   const singleBody = `${fieldsBase}; where game_modes = (1) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
   const singleRaw = await fetchIgdbGames(singleBody).catch(() => []);
-  nonMain.push({ id: 'single_player', title: 'Топ одиночных игр', type: 'non_main', games: singleRaw.length ? await Promise.all(singleRaw.map(processPopularGame)) : [] });
+  nonMain.push({ id: 'single_player', title: 'Top single-player games', type: 'non_main', games: singleRaw.length ? stripPlatforms(await Promise.all(singleRaw.map(processPopularGame))) : [] });
 
   const multiBody = `${fieldsBase}; where game_modes = (2) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
   const multiRaw = await fetchIgdbGames(multiBody).catch(() => []);
-  nonMain.push({ id: 'multiplayer', title: 'Топ многопользовательских игр', type: 'non_main', games: multiRaw.length ? await Promise.all(multiRaw.map(processPopularGame)) : [] });
+  nonMain.push({ id: 'multiplayer', title: 'Top multiplayer games', type: 'non_main', games: multiRaw.length ? stripPlatforms(await Promise.all(multiRaw.map(processPopularGame))) : [] });
 
   const usedThemeIds = new Set();
   for (let i = 0; i < 3; i++) {
@@ -389,12 +394,12 @@ async function buildNonMainTops(dateStr) {
       usedThemeIds.add(next.id);
       const searchBody = `${fieldsBase}; search "${next.search}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
       const themeRaw = await fetchIgdbGames(searchBody).catch(() => []);
-      nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeRaw.length ? await Promise.all(themeRaw.map(processPopularGame)) : [] });
+      nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeRaw.length ? stripPlatforms(await Promise.all(themeRaw.map(processPopularGame))) : [] });
     } else {
       usedThemeIds.add(t.id);
       const searchBody = `${fieldsBase}; search "${t.search}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
       const themeRaw = await fetchIgdbGames(searchBody).catch(() => []);
-      nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeRaw.length ? await Promise.all(themeRaw.map(processPopularGame)) : [] });
+      nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeRaw.length ? stripPlatforms(await Promise.all(themeRaw.map(processPopularGame))) : [] });
     }
   }
 
