@@ -1488,8 +1488,9 @@ app.get('/games/compilations/daily', async (req, res) => {
   }
 });
 
-// GET /games/tops/feed?date=YYYY-MM-DD — лента для вкладки «Топ игр»: 10 блоков в порядке неосновной, основной, … (4 основных + 6 неосновных)
-app.get('/games/tops/feed', async (req, res) => {
+// GET /tops/feed?date=YYYY-MM-DD — лента для вкладки «Топ игр»: 10 блоков в порядке неосновной, основной, … (4 основных + 6 неосновных)
+// Внешний nginx проксирует /games/tops/feed -> /tops/feed на этом сервисе.
+app.get('/tops/feed', async (req, res) => {
   const dateStr = (req.query.date || '').trim() || new Date().toISOString().slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
     return res.status(400).json({ error: 'Invalid date, use YYYY-MM-DD' });
