@@ -248,7 +248,8 @@ cron.schedule('5 0 * * 1', async () => {
 // -------- Вкладка «Топ игр»: 4 основных (неделя) + 6 неосновных (день), порядок N,M,N,M,N,M,N,M,N,N --------
 const TOPS_FEED_MAIN_CACHE_TTL = 86400 * 14;
 const TOPS_FEED_NON_MAIN_CACHE_TTL = 86400 * 2;
-const TOPS_FEED_PER_BLOCK = 9;
+const MAIN_TOPS_PER_BLOCK = 10;
+const NON_MAIN_TOPS_PER_BLOCK = 9;
 const fieldsBase = 'fields id,name,cover.url,aggregated_rating,aggregated_rating_count,release_dates.date,genres.name,platforms.name';
 
 const MAIN_TOPS = [
@@ -332,7 +333,7 @@ async function buildMainTops(weekKey) {
         const processed = await Promise.all(strictRaw.map(processPopularGame));
         allGames = processed;
       }
-      if (allGames.length < TOPS_FEED_PER_BLOCK) {
+      if (allGames.length < MAIN_TOPS_PER_BLOCK) {
         const looseBody = `${fieldsBase}; where aggregated_rating >= 70 & aggregated_rating_count >= 10; sort aggregated_rating desc; limit 100;`;
         const looseRaw = await fetchIgdbGames(looseBody).catch(() => []);
         if (looseRaw && looseRaw.length) {
@@ -342,16 +343,16 @@ async function buildMainTops(weekKey) {
             if (!knownIds.has(g.id)) {
               allGames.push(g);
               knownIds.add(g.id);
-              if (allGames.length >= TOPS_FEED_PER_BLOCK) break;
+              if (allGames.length >= MAIN_TOPS_PER_BLOCK) break;
             }
           }
         }
       }
-      const games = stripPlatforms(allGames.slice(0, TOPS_FEED_PER_BLOCK));
+      const games = stripPlatforms(allGames.slice(0, MAIN_TOPS_PER_BLOCK));
       main.push({ id: def.id, title: def.title, type: 'main', games });
     } else if (def.id === 'new_releases') {
       // Только релизы, которые уже вышли (first_release_date <= now) и не старше 30 дней
-      const body = `${fieldsBase}; where first_release_date >= ${thirtyDaysAgo} & first_release_date <= ${now} & aggregated_rating >= 50; sort first_release_date desc; limit ${TOPS_FEED_PER_BLOCK};`;
+      const body = `${fieldsBase}; where first_release_date >= ${thirtyDaysAgo} & first_release_date <= ${now} & aggregated_rating >= 50; sort first_release_date desc; limit ${MAIN_TOPS_PER_BLOCK};`;
       const raw = await fetchIgdbGames(body).catch(() => []);
       const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
       main.push({ id: def.id, title: def.title, type: 'main', games });
@@ -372,7 +373,7 @@ async function buildMainTops(weekKey) {
       }
       main.push({ id: def.id, title: def.title, type: 'main', games });
     } else if (def.id === 'top_year') {
-      const body = `${fieldsBase}; where first_release_date >= ${yearStart} & first_release_date <= ${yearEnd} & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+      const body = `${fieldsBase}; where first_release_date >= ${yearStart} & first_release_date <= ${yearEnd} & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${MAIN_TOPS_PER_BLOCK};`;
       const raw = await fetchIgdbGames(body).catch(() => []);
       const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
       main.push({ id: def.id, title: def.title, type: 'main', games });
@@ -394,16 +395,16 @@ async function buildNonMainTops(dateStr) {
 
   const genreIndex = seed % GENRES_ROTATION.length;
   const genreDef = GENRES_ROTATION[genreIndex];
-  const genreBody = `${fieldsBase}; where genres = (${genreDef.genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+  const genreBody = `${fieldsBase}; where genres = (${genreDef.genreId}) & aggregated_rating >= 60 & aggregated_rating_count >= 3; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
   const genreRaw = await fetchIgdbGames(genreBody).catch(() => []);
   const genreGames = genreRaw.length ? stripPlatforms(await Promise.all(genreRaw.map(processPopularGame))) : [];
   nonMain.push({ id: genreDef.id, title: genreDef.title, type: 'non_main', games: genreGames });
 
-  const singleBody = `${fieldsBase}; where game_modes = (1) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+  const singleBody = `${fieldsBase}; where game_modes = (1) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
   const singleRaw = await fetchIgdbGames(singleBody).catch(() => []);
   nonMain.push({ id: 'single_player', title: 'Top single-player games', type: 'non_main', games: singleRaw.length ? stripPlatforms(await Promise.all(singleRaw.map(processPopularGame))) : [] });
 
-  const multiBody = `${fieldsBase}; where game_modes = (2) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+  const multiBody = `${fieldsBase}; where game_modes = (2) & aggregated_rating >= 60 & aggregated_rating_count >= 5; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
   const multiRaw = await fetchIgdbGames(multiBody).catch(() => []);
   nonMain.push({ id: 'multiplayer', title: 'Top multiplayer games', type: 'non_main', games: multiRaw.length ? stripPlatforms(await Promise.all(multiRaw.map(processPopularGame))) : [] });
 
@@ -420,7 +421,7 @@ async function buildNonMainTops(dateStr) {
       nonMain.push({ id: next.id, title: next.title, type: 'non_main', games: themeRaw.length ? stripPlatforms(await Promise.all(themeRaw.map(processPopularGame))) : [] });
     } else {
       usedThemeIds.add(t.id);
-      const searchBody = `${fieldsBase}; search "${t.search}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
+      const searchBody = `${fieldsBase}; search "${t.search}"; where aggregated_rating >= 50 & aggregated_rating_count >= 2; sort aggregated_rating desc; limit ${NON_MAIN_TOPS_PER_BLOCK};`;
       const themeRaw = await fetchIgdbGames(searchBody).catch(() => []);
       nonMain.push({ id: t.id, title: t.title, type: 'non_main', games: themeRaw.length ? stripPlatforms(await Promise.all(themeRaw.map(processPopularGame))) : [] });
     }
