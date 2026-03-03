@@ -322,9 +322,32 @@ async function buildMainTops(weekKey) {
 
   for (const def of MAIN_TOPS) {
     if (def.id === 'all_time') {
-      const body = `${fieldsBase}; where aggregated_rating >= 75 & aggregated_rating_count > 30; sort aggregated_rating desc; limit ${TOPS_FEED_PER_BLOCK};`;
-      const raw = await fetchIgdbGames(body).catch(() => []);
-      const games = raw.length ? stripPlatforms(await Promise.all(raw.map(processPopularGame))) : [];
+      // Строим топ «за всё время» в два шага, чтобы почти всегда набрать 9 игр:
+      // 1) строгий фильтр по рейтингу и числу оценок
+      // 2) при нехватке – более мягкий фильтр, без дубликатов
+      let allGames = [];
+      const strictBody = `${fieldsBase}; where aggregated_rating >= 80 & aggregated_rating_count > 50; sort aggregated_rating desc; limit 50;`;
+      const strictRaw = await fetchIgdbGames(strictBody).catch(() => []);
+      if (strictRaw && strictRaw.length) {
+        const processed = await Promise.all(strictRaw.map(processPopularGame));
+        allGames = processed;
+      }
+      if (allGames.length < TOPS_FEED_PER_BLOCK) {
+        const looseBody = `${fieldsBase}; where aggregated_rating >= 70 & aggregated_rating_count >= 10; sort aggregated_rating desc; limit 100;`;
+        const looseRaw = await fetchIgdbGames(looseBody).catch(() => []);
+        if (looseRaw && looseRaw.length) {
+          const processedLoose = await Promise.all(looseRaw.map(processPopularGame));
+          const knownIds = new Set(allGames.map(g => g.id));
+          for (const g of processedLoose) {
+            if (!knownIds.has(g.id)) {
+              allGames.push(g);
+              knownIds.add(g.id);
+              if (allGames.length >= TOPS_FEED_PER_BLOCK) break;
+            }
+          }
+        }
+      }
+      const games = stripPlatforms(allGames.slice(0, TOPS_FEED_PER_BLOCK));
       main.push({ id: def.id, title: def.title, type: 'main', games });
     } else if (def.id === 'new_releases') {
       // Только релизы, которые уже вышли (first_release_date <= now) и не старше 30 дней
